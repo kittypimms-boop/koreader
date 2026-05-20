@@ -135,6 +135,8 @@ local DrawingCanvas = InputContainer:extend{
     _last_pen_x         = nil,
     _last_pen_y         = nil,
     _last_pen_down_time = nil,  -- fts timestamp of last pen-tip down (double-tap detection)
+    _last_penup_time    = nil,  -- fts timestamp of last pen-tip up (stroke grouping)
+    _group_id           = 1,    -- current undo-group id; increments on timeout between strokes
 
     -- Raw touch tracking (separate from pen to avoid cross-contamination)
     _last_touch_x = nil,
@@ -867,11 +869,22 @@ function DrawingCanvas:_pollPen()
                     self._last_pen_down_time = nil
                     self._last_pen_x = nil
                     self._last_pen_y = nil
+                    -- Remove any stub stroke left by the first tap of the double-tap.
+                    if self._stroke_buf:undo() then
+                        self._page_dirty = true
+                        self:_repaintAll()
+                    end
                     self:_showQuickMenu()
                     return
                 end
                 self._last_pen_down_time = now
-                self._stroke_buf:penDown(sx, sy, lw, self._current_color)
+                -- Stroke grouping: if more than 500 ms elapsed since the last pen-up,
+                -- start a new undo group so each "burst" of strokes undoes as one unit.
+                if self._last_penup_time and
+                   (now - self._last_penup_time) > time.ms(500) then
+                    self._group_id = self._group_id + 1
+                end
+                self._stroke_buf:penDown(sx, sy, lw, self._current_color, self._group_id)
             else
                 self._stroke_buf:penMove(sx, sy, lw)
             end
@@ -898,6 +911,7 @@ function DrawingCanvas:_pollPen()
             if not self._eraser_locked then
                 self._eraser_mode = false
             end
+            self._last_penup_time = time.now()
             self._stroke_buf:penUp()
             if self._last_pen_x then
                 self._page_dirty = true

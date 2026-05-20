@@ -160,6 +160,73 @@ describe("StrokeBuffer", function()
         end)
     end)
 
+    -- ── stroke grouping ──────────────────────────────────────────────────────
+
+    describe("stroke grouping (group_id > 0)", function()
+
+        it("strokes with same group_id are undone together", function()
+            local sb = StrokeBuffer.new()
+            -- group 1: two strokes
+            sb:penDown(0, 0, 2, nil, 1); sb:penMove(5, 5, 2); sb:penUp()
+            sb:penDown(10, 0, 2, nil, 1); sb:penMove(15, 5, 2); sb:penUp()
+            -- group 2: one stroke
+            sb:penDown(20, 0, 2, nil, 2); sb:penMove(25, 5, 2); sb:penUp()
+            assert.equals(3, #sb.strokes)
+
+            local bundle = sb:undo()   -- undoes group 2
+            assert.equals(2, #sb.strokes)
+            assert.equals(1, #bundle)
+
+            local bundle2 = sb:undo()  -- undoes group 1 (both strokes)
+            assert.equals(0, #sb.strokes)
+            assert.equals(2, #bundle2)
+        end)
+
+        it("redo restores the full group at once", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, nil, 1); sb:penMove(5, 5, 2); sb:penUp()
+            sb:penDown(10, 0, 2, nil, 1); sb:penMove(15, 5, 2); sb:penUp()
+            sb:undo()
+            assert.equals(0, #sb.strokes)
+            sb:redo()
+            assert.equals(2, #sb.strokes)
+        end)
+
+        it("group_id=0 still undoes one stroke at a time", function()
+            local sb = StrokeBuffer.new()
+            for i = 1, 3 do
+                sb:penDown(i, 0, 2, nil, 0)
+                sb:penMove(i+5, 5, 2)
+                sb:penUp()
+            end
+            sb:undo()
+            assert.equals(2, #sb.strokes)
+            sb:undo()
+            assert.equals(1, #sb.strokes)
+        end)
+
+        it("mixed groups: ungrouped strokes before a group undo correctly", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, nil, 0); sb:penMove(5, 5, 2); sb:penUp()  -- ungrouped
+            sb:penDown(10, 0, 2, nil, 5); sb:penMove(15, 5, 2); sb:penUp() -- group 5
+            sb:penDown(20, 0, 2, nil, 5); sb:penMove(25, 5, 2); sb:penUp() -- group 5
+            -- undo removes group 5 (2 strokes)
+            sb:undo()
+            assert.equals(1, #sb.strokes)
+            assert.equals(0, sb.strokes[1].group_id)
+            -- undo removes the ungrouped stroke
+            sb:undo()
+            assert.equals(0, #sb.strokes)
+        end)
+
+        it("group_id is preserved through serialisation round-trip", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, "#ff0000", 7); sb:penMove(5, 5, 2); sb:penUp()
+            local sb2 = StrokeBuffer.fromTable(sb:toTable())
+            assert.equals(7, sb2.strokes[1].group_id)
+        end)
+    end)
+
     -- ── eraseAt ─────────────────────────────────────────────────────────────
 
     describe("eraseAt", function()

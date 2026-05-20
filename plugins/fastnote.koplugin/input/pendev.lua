@@ -55,8 +55,9 @@ local MT_TOOL_PEN        = 1     -- ABS_MT_TOOL_TYPE value for pen
 local MT_TOOL_ERASER     = 2     -- ABS_MT_TOOL_TYPE value for eraser end
 
 -- EV_KEY codes
-local BTN_TOOL_PEN = 0x140  -- 320
-local BTN_TOUCH    = 0x14a  -- 330
+local BTN_TOOL_PEN    = 0x140  -- 320
+local BTN_TOOL_RUBBER = 0x141  -- 321  (eraser end of stylus)
+local BTN_TOUCH       = 0x14a  -- 330
 
 -- Pressure at or above this value is treated as physical contact.
 -- The Elan chip reports 0 (or near-0) for hover and measurable pressure
@@ -204,10 +205,11 @@ function PenDev.open(path)
         y_max   = FALLBACK_Y_MAX,
         p_max   = FALLBACK_P_MAX,
         -- MT pen tracking (Elan combo chip protocol)
-        _mt_cur      = 0,    -- current MT slot being updated
-        _mt_slots    = {},   -- slot# -> {tool, id, x, y, p}
-        _mt_pen_slot = nil,  -- slot# identified as pen (TOOL_TYPE_PEN)
-        _has_mt_pen  = false, -- true once MT pen protocol detected; gates BTN_TOUCH skip
+        _mt_cur         = 0,    -- current MT slot being updated
+        _mt_slots       = {},   -- slot# -> {tool, id, x, y, p}
+        _mt_pen_slot    = nil,  -- slot# identified as pen (TOOL_TYPE_PEN)
+        _has_mt_pen     = false, -- true once MT pen protocol detected; gates BTN_TOUCH skip
+        _mt_active_tool = nil,  -- last synthesized tool: "pen"|"eraser"|nil
     }, PenDev)
 
     self:_query_abs()
@@ -340,6 +342,21 @@ function PenDev:poll(cb)
                 if pen_slot then
                     local pd = self._mt_slots[pen_slot]
                     if pd then
+                        -- Synthesize BTN_TOOL_PEN / BTN_TOOL_RUBBER when the
+                        -- detected tool type changes.  The Elan firmware does
+                        -- not send these EV_KEY codes; we derive them from
+                        -- ABS_MT_TOOL_TYPE so pen_statemachine.lua tracks the
+                        -- correct tool ("pen" vs "eraser") before "down" fires.
+                        local new_tool = (pd.tool == MT_TOOL_ERASER) and "eraser" or "pen"
+                        if new_tool ~= self._mt_active_tool then
+                            self._mt_active_tool = new_tool
+                            if new_tool == "eraser" then
+                                self.sm:feed_key(BTN_TOOL_RUBBER, 1, nil)
+                            else
+                                self.sm:feed_key(BTN_TOOL_PEN, 1, nil)
+                            end
+                        end
+
                         -- Feed MT coordinates into the SM's single-touch axes.
                         if pd.x then self.sm:feed_abs(0,  pd.x) end  -- ABS_X
                         if pd.y then self.sm:feed_abs(1,  pd.y) end  -- ABS_Y

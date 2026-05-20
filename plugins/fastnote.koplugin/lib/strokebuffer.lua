@@ -31,12 +31,13 @@ end
 
 --- Begin a new stroke at (x, y) with line width w and given color.
 -- Clears the redo stack — any new stroke discards redo history.
--- @number x      screen x
--- @number y      screen y
--- @number w      line width at this sample
--- @string color  hex color string (optional, defaults to black)
-function StrokeBuffer:penDown(x, y, w, color)
-    self.current = Stroke.new(color)
+-- @number x        screen x
+-- @number y        screen y
+-- @number w        line width at this sample
+-- @string color    hex color string (optional, defaults to black)
+-- @number group_id integer undo-group id (default 0 = ungrouped)
+function StrokeBuffer:penDown(x, y, w, color, group_id)
+    self.current = Stroke.new(color, group_id)
     self.current:addPoint(x, y, w)
     self.undone = {}  -- new stroke clears redo history
 end
@@ -62,22 +63,38 @@ end
 -- Undo / redo
 -- ---------------------------------------------------------------------------
 
---- Undo the last committed stroke.
--- @return Stroke|nil  The removed stroke (caller uses its bbox for repaint).
+--- Undo the last committed undo group.
+-- group_id == 0  →  legacy/ungrouped: removes only the last stroke (one undo unit).
+-- group_id > 0   →  grouped: removes ALL strokes at the tail that share the same
+--                   group_id, so one undo erases a whole timed group of strokes.
+-- The removed strokes are pushed as a bundle onto `undone`.
+-- @return  truthy (bundle table) on success, nil when already empty.
 function StrokeBuffer:undo()
     if #self.strokes == 0 then return nil end
-    local s = table.remove(self.strokes)
-    self.undone[#self.undone + 1] = s
-    return s
+    local gid    = self.strokes[#self.strokes].group_id
+    local bundle = {}
+    if gid == 0 then
+        -- Ungrouped: one stroke per undo step (backward-compatible default).
+        table.insert(bundle, table.remove(self.strokes))
+    else
+        -- Grouped: remove all tail strokes with matching group_id.
+        while #self.strokes > 0 and self.strokes[#self.strokes].group_id == gid do
+            table.insert(bundle, 1, table.remove(self.strokes))
+        end
+    end
+    self.undone[#self.undone + 1] = bundle
+    return bundle
 end
 
---- Redo the last undone stroke.
--- @return Stroke|nil  The restored stroke (caller uses its bbox for repaint).
+--- Redo the last undone undo group.
+-- @return  truthy (bundle table) on success, nil when nothing to redo.
 function StrokeBuffer:redo()
     if #self.undone == 0 then return nil end
-    local s = table.remove(self.undone)
-    self.strokes[#self.strokes + 1] = s
-    return s
+    local bundle = table.remove(self.undone)
+    for _, s in ipairs(bundle) do
+        self.strokes[#self.strokes + 1] = s
+    end
+    return bundle
 end
 
 -- ---------------------------------------------------------------------------

@@ -15,11 +15,13 @@ local Stroke = {}
 Stroke.__index = Stroke
 
 --- Create a new empty stroke.
--- @string color  Hex color string, e.g. "#000000". Defaults to black.
-function Stroke.new(color)
+-- @string color     Hex color string, e.g. "#000000". Defaults to black.
+-- @number group_id  Integer undo-group identifier (default 0).
+function Stroke.new(color, group_id)
     return setmetatable({
-        color = color or "#000000",
-        pts   = {},  -- flat array: {x,y,w, x,y,w, ...}
+        color    = color or "#000000",
+        group_id = group_id or 0,
+        pts      = {},  -- flat array: {x,y,w, x,y,w, ...}
     }, Stroke)
 end
 
@@ -127,13 +129,13 @@ end
 --- Serialise to a plain Lua table for JSON encoding.
 -- Points are stored as a flat array [x,y,w, x,y,w, ...] for compactness.
 function Stroke:toTable()
-    return {color = self.color, pts = self.pts}
+    return {color = self.color, group_id = self.group_id, pts = self.pts}
 end
 
 --- Reconstruct a Stroke from a plain Lua table (from JSON decode).
--- @param t  table  {color, pts=[flat array]}
+-- @param t  table  {color, group_id, pts=[flat array]}
 function Stroke.fromTable(t)
-    local s = Stroke.new(t.color)
+    local s = Stroke.new(t.color, t.group_id)
     s.pts   = t.pts or {}
     return s
 end
