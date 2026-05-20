@@ -347,13 +347,16 @@ function PenDev:poll(cb)
                         -- not send these EV_KEY codes; we derive them from
                         -- ABS_MT_TOOL_TYPE so pen_statemachine.lua tracks the
                         -- correct tool ("pen" vs "eraser") before "down" fires.
-                        local new_tool = (pd.tool == MT_TOOL_ERASER) and "eraser" or "pen"
-                        if new_tool ~= self._mt_active_tool then
-                            self._mt_active_tool = new_tool
-                            if new_tool == "eraser" then
-                                self.sm:feed_key(BTN_TOOL_RUBBER, 1, nil)
-                            else
-                                self.sm:feed_key(BTN_TOOL_PEN, 1, nil)
+                        -- Skip if tool type is unknown (may arrive in a later EV_SYN frame).
+                        if pd.tool then
+                            local new_tool = (pd.tool == MT_TOOL_ERASER) and "eraser" or "pen"
+                            if new_tool ~= self._mt_active_tool then
+                                self._mt_active_tool = new_tool
+                                if new_tool == "eraser" then
+                                    self.sm:feed_key(BTN_TOOL_RUBBER, 1, nil)
+                                else
+                                    self.sm:feed_key(BTN_TOOL_PEN, 1, nil)
+                                end
                             end
                         end
 
