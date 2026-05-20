@@ -132,10 +132,11 @@ local DrawingCanvas = InputContainer:extend{
     _palmreject = nil,             -- PalmReject instance (Stage 3)
 
     -- Raw pen tracking (raw input path)
-    _last_pen_x         = nil,
-    _last_pen_y         = nil,
-    _last_pen_down_time = nil,  -- fts timestamp of last pen-tip down (double-tap detection)
-    _last_penup_time    = nil,  -- fts timestamp of last pen-tip up (stroke grouping)
+    _last_pen_x              = nil,
+    _last_pen_y              = nil,
+    _last_pen_down_time      = nil,  -- fts timestamp of last pen-tip down (double-tap detection)
+    _last_contact_was_stroke = false, -- true if the previous pen contact involved movement (not a tap)
+    _last_penup_time         = nil,  -- fts timestamp of last pen-tip up (stroke grouping)
     _group_id           = 1,    -- current undo-group id; increments on timeout between strokes
 
     -- Raw touch tracking (separate from pen to avoid cross-contamination)
@@ -673,7 +674,7 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
             self._stroke_min_x, self._stroke_min_y,
             self._stroke_max_x, self._stroke_max_y,
             DEFAULT_LINE_WIDTH)
-        UIManager:setDirty(self, function() return "ui", Geom:new(stroke_rect) end)
+        UIManager:setDirty(self, function() return "partial", Geom:new(stroke_rect), true end)
     end
 
     self._stroke_x     = nil
@@ -747,7 +748,7 @@ function DrawingCanvas:_repaintAll()
         local override = self._dark_mode and Blitbuffer.COLOR_WHITE or nil
         self._stroke_buf:repaintTo(self._bb, override)
     end
-    UIManager:setDirty(self, "partial")
+    UIManager:setDirty(self, "partial", nil, true)
 end
 
 --- Return the Blitbuffer color for new live strokes (current ink, mode-aware).
@@ -863,8 +864,14 @@ function DrawingCanvas:_pollPen()
                 end
                 -- Pen double-tap: two pen-tip downs within 400 ms opens quick menu.
                 -- Eraser-end downs are excluded (already returned via eraser path).
+                -- A previous contact that involved movement (a stroke) is not counted
+                -- as a tap, so lifting the pen and continuing a stroke never fires the
+                -- double-tap menu.
                 local now = time.now()
+                local prev_was_stroke = self._last_contact_was_stroke
+                self._last_contact_was_stroke = false  -- reset for this contact
                 if self._last_pen_down_time and
+                   not prev_was_stroke and
                    (now - self._last_pen_down_time) < time.ms(400) then
                     self._last_pen_down_time = nil
                     self._last_pen_x = nil
@@ -886,6 +893,7 @@ function DrawingCanvas:_pollPen()
                 end
                 self._stroke_buf:penDown(sx, sy, lw, self._current_color, self._group_id)
             else
+                self._last_contact_was_stroke = true  -- mark this contact as a stroke (moved)
                 self._stroke_buf:penMove(sx, sy, lw)
             end
 
@@ -919,7 +927,7 @@ function DrawingCanvas:_pollPen()
             end
             self._last_pen_x = nil
             self._last_pen_y = nil
-            UIManager:setDirty(self, "ui")
+            UIManager:setDirty(self, "partial", nil, true)
         end
     end)
 
@@ -978,7 +986,7 @@ function DrawingCanvas:_pollTouch()
                 end
                 self._last_touch_x = nil
                 self._last_touch_y = nil
-                UIManager:setDirty(self, "ui")
+                UIManager:setDirty(self, "partial", nil, true)
             end
         end
     end)
