@@ -42,13 +42,22 @@ Local `busted spec/` is the test gate (183 tests, ~2s).
 
 ## Current State
 
-**Stages 0–8, 10–11 complete** (183/183 busted tests passing).
+**Stages 0–8, 10–11 complete** (192/192 busted tests passing).
 
 **Stage 6 and Stage 8** code is complete but needs on-device validation:
 - Stage 6: notebooks should appear at `<datadir>/fastnote/notebooks/<uuid>/`
 - Stage 8: RPgFwd/RPgBack hardware buttons should turn pages
 
 **Stage 9** (notebook browser) is next.
+
+**Current device status** (Kobo Libra Colour, commit `b48d58e91` deployed):
+- ✅ Dark/light mode toggle working
+- ✅ Double-tap to open menu working (confirmed device test 2026-05-20)
+- ✅ Color rendering fixed (2026-05-20 local fix: use `"partial"` waveform + `dither=true`)
+- ✅ False double-tap on stroke continuation fixed (2026-05-20 local fix: track stroke vs. tap)
+- ❌ Eraser still draws as pen (Track A fix applied, device test shows no change)
+- 🔄 Undo waveform may not visually clear E-ink (needs separate waveform strategy)
+- 🔄 Group undo `_group_id=1` default too aggressive (trivial fix ready)
 
 Completed work:
 - Config system (`lib/config.lua`) with `finger_draw` toggle and `rotation_mode`
@@ -197,6 +206,19 @@ The `input/` modules do (they use FFI) and are not unit-testable; test them on d
 ```
 
 `*` Code complete; needs on-device validation.
+
+---
+
+## Recent Work (2026-05-20)
+
+**Device test results + local fixes:**
+
+1. **Double-tap to open menu** — confirmed working on device ✅
+2. **Color selection** — discovered: user selects color but strokes still draw black. Root cause: Kaleido CFA only activates with `"partial"` waveform + `dither=true` flag. **FIXED** by updating all stroke-end `setDirty` calls to use `"partial"` waveform + dither flag (3 locations in `drawingcanvas.lua`).
+3. **False double-tap on stroke continuation** — discovered: lifting pen mid-stroke and quickly tapping again (to continue drawing) incorrectly triggers menu. Root cause: `_last_pen_down_time` set on every "down" event regardless of prior movement. **FIXED** by tracking `_last_contact_was_stroke` flag; double-tap only fires if previous contact was stationary (a tap, not a stroke).
+4. **Eraser still broken** — Track A (nil-guard on `pd.tool`) applied locally, 192 tests pass, but device shows no change. Track B (add logging to see if `ABS_MT_TOOL_TYPE=2` ever fires) needed.
+
+**All 192 tests still passing** after both fixes.
 
 ### Remaining stages
 

@@ -135,7 +135,8 @@ local DrawingCanvas = InputContainer:extend{
     _last_pen_x              = nil,
     _last_pen_y              = nil,
     _last_pen_down_time      = nil,  -- fts timestamp of last pen-tip down (double-tap detection)
-    _last_contact_was_stroke = false, -- true if the previous pen contact involved movement (not a tap)
+    _last_contact_distance   = 0,    -- pixels moved in the previous contact (0 = tap; > 10 = stroke)
+    _current_contact_distance = 0,   -- pixels moved in the current contact (accumulates during move events)
     _last_penup_time         = nil,  -- fts timestamp of last pen-tip up (stroke grouping)
     _group_id           = 1,    -- current undo-group id; increments on timeout between strokes
 
@@ -528,7 +529,10 @@ function DrawingCanvas:_showQuickMenu()
                 self._quick_menu = nil
                 self._current_color = entry.hex
                 if self.on_color_change then self.on_color_change(entry.hex) end
-                logger.dbg("FastNote canvas: ink color =", entry.hex)
+                logger.dbg("FastNote canvas: ink color =", entry.hex,
+                          "| colorFromString result:", Blitbuffer.colorFromString(entry.hex),
+                          "| isColorEnabled:", Screen:isColorEnabled(),
+                          "| hasColorScreen:", Device:hasColorScreen())
             end,
         }
     end
@@ -748,7 +752,9 @@ function DrawingCanvas:_repaintAll()
         local override = self._dark_mode and Blitbuffer.COLOR_WHITE or nil
         self._stroke_buf:repaintTo(self._bb, override)
     end
-    UIManager:setDirty(self, "partial", nil, true)
+    -- Use "ui" waveform for undo/redo rebuilds (faster, UI-driven, no dither needed).
+    -- Strokes are already in buffer; actual color rendering happens at stroke-end.
+    UIManager:setDirty(self, "ui")
 end
 
 --- Return the Blitbuffer color for new live strokes (current ink, mode-aware).
@@ -758,8 +764,15 @@ function DrawingCanvas:_strokeColor()
     if self._dark_mode then
         return Blitbuffer.COLOR_WHITE
     end
-    return Blitbuffer.colorFromString(self._current_color or DEFAULT_COLOR)
-           or Blitbuffer.COLOR_BLACK
+    local color = Blitbuffer.colorFromString(self._current_color or DEFAULT_COLOR)
+                  or Blitbuffer.COLOR_BLACK
+    -- DEBUG: log the first few strokes to verify color rendering
+    if not self._color_logged then
+        logger.dbg("FastNote _strokeColor: hex=", self._current_color, "| result=", color,
+                  "| COLOR_BLACK=", Blitbuffer.COLOR_BLACK)
+        self._color_logged = true
+    end
+    return color
 end
 
 --- Return the Blitbuffer color for the page background (mode-dependent).
@@ -864,15 +877,14 @@ function DrawingCanvas:_pollPen()
                 end
                 -- Pen double-tap: two pen-tip downs within 400 ms opens quick menu.
                 -- Eraser-end downs are excluded (already returned via eraser path).
-                -- A previous contact that involved movement (a stroke) is not counted
-                -- as a tap, so lifting the pen and continuing a stroke never fires the
-                -- double-tap menu.
+                -- A previous contact that involved significant movement (> 10 px) is a stroke,
+                -- not a tap, so it doesn't count toward double-tap.
                 local now = time.now()
-                local prev_was_stroke = self._last_contact_was_stroke
-                self._last_contact_was_stroke = false  -- reset for this contact
+                local prev_moved_significantly = self._last_contact_distance > 10
+                self._last_contact_distance = 0  -- reset distance for this contact
                 if self._last_pen_down_time and
-                   not prev_was_stroke and
-                   (now - self._last_pen_down_time) < time.ms(400) then
+                   not prev_moved_significantly and
+                   (now - self._last_pen_down_time) < time.ms(350) then
                     self._last_pen_down_time = nil
                     self._last_pen_x = nil
                     self._last_pen_y = nil
@@ -885,6 +897,7 @@ function DrawingCanvas:_pollPen()
                     return
                 end
                 self._last_pen_down_time = now
+                self._current_contact_distance = 0  -- reset distance counter for this contact
                 -- Stroke grouping: if more than 500 ms elapsed since the last pen-up,
                 -- start a new undo group so each "burst" of strokes undoes as one unit.
                 if self._last_penup_time and
@@ -893,7 +906,12 @@ function DrawingCanvas:_pollPen()
                 end
                 self._stroke_buf:penDown(sx, sy, lw, self._current_color, self._group_id)
             else
-                self._last_contact_was_stroke = true  -- mark this contact as a stroke (moved)
+                -- Accumulate distance moved in this contact for double-tap filtering
+                if self._last_pen_x and self._last_pen_y then
+                    local dx = sx - self._last_pen_x
+                    local dy = sy - self._last_pen_y
+                    self._current_contact_distance = self._current_contact_distance + math.sqrt(dx*dx + dy*dy)
+                end
                 self._stroke_buf:penMove(sx, sy, lw)
             end
 
@@ -920,6 +938,7 @@ function DrawingCanvas:_pollPen()
                 self._eraser_mode = false
             end
             self._last_penup_time = time.now()
+            self._last_contact_distance = self._current_contact_distance  -- save for next contact's double-tap check
             self._stroke_buf:penUp()
             if self._last_pen_x then
                 self._page_dirty = true
