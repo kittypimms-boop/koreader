@@ -50,13 +50,12 @@ Local `busted spec/` is the test gate (183 tests, ~2s).
 
 **Stage 9** (notebook browser) is next.
 
-**Current device status** (Kobo Libra Colour, commit `b48d58e91` deployed):
+**Current device status** (Kobo Libra Colour):
 - ✅ Dark/light mode toggle working
 - ✅ Double-tap to open menu working (confirmed device test 2026-05-20)
-- ✅ Color rendering fixed (2026-05-20 local fix: use `"partial"` waveform + `dither=true`)
-- ✅ False double-tap on stroke continuation fixed (2026-05-20 local fix: track stroke vs. tap)
-- ❌ Eraser still draws as pen (Track A fix applied, device test shows no change)
-- 🔄 Undo waveform may not visually clear E-ink (needs separate waveform strategy)
+- 🔄 False double-tap on rapid writing — improved by distance threshold (> 10 px, 350 ms window); needs on-device retest
+- ❌ **Color rendering still broken** — strokes draw black/white regardless of selection. `"partial"+dither` approach tried and failed (see below). Diagnostic logging now in place; need device log capture.
+- ❌ Eraser still draws as pen (Track A nil-guard applied, no change; Track B logging pending)
 - 🔄 Group undo `_group_id=1` default too aggressive (trivial fix ready)
 
 Completed work:
@@ -211,14 +210,45 @@ The `input/` modules do (they use FFI) and are not unit-testable; test them on d
 
 ## Recent Work (2026-05-20)
 
-**Device test results + local fixes:**
+**Device test results, failed attempts, and current state:**
 
-1. **Double-tap to open menu** — confirmed working on device ✅
-2. **Color selection** — discovered: user selects color but strokes still draw black. Root cause: Kaleido CFA only activates with `"partial"` waveform + `dither=true` flag. **FIXED** by updating all stroke-end `setDirty` calls to use `"partial"` waveform + dither flag (3 locations in `drawingcanvas.lua`).
-3. **False double-tap on stroke continuation** — discovered: lifting pen mid-stroke and quickly tapping again (to continue drawing) incorrectly triggers menu. Root cause: `_last_pen_down_time` set on every "down" event regardless of prior movement. **FIXED** by tracking `_last_contact_was_stroke` flag; double-tap only fires if previous contact was stationary (a tap, not a stroke).
-4. **Eraser still broken** — Track A (nil-guard on `pd.tool`) applied locally, 192 tests pass, but device shows no change. Track B (add logging to see if `ABS_MT_TOOL_TYPE=2` ever fires) needed.
+### ✅ Double-tap to open menu
+Confirmed working on device.
 
-**All 192 tests still passing** after both fixes.
+### 🔄 False double-tap on rapid writing (improved, needs retest)
+Lifting pen mid-sentence and touching down again quickly (continuing to write) still incorrectly opened the menu.
+- **Root cause:** `_last_pen_down_time` tracked every pen-down; boolean "was prior contact a stroke" was too coarse — short fast strokes < 1 px registered as taps.
+- **First fix (committed):** Tracked `_last_contact_was_stroke` boolean. Improved but not enough for rapid writing.
+- **Current fix (in HEAD, not device-tested):** Replaced boolean with `_last_contact_distance` (accumulated pixel distance during move events). Double-tap only fires if previous contact moved < 10 px AND elapsed time < 350 ms. Needs on-device retest for rapid handwriting scenario.
+
+### ❌ Color rendering — FAILED APPROACH, REVERTED
+Strokes draw black/white regardless of color selected in menu.
+
+**Hypothesis tried:** Kaleido 3 CFA only activates when waveform is `"partial"` (GL16) **and** `dither=true` flag is set. Changed 4 `setDirty` calls in `drawingcanvas.lua` (stroke-end geom, `_repaintAll`, pen-up, touch stroke-end) to `"partial" + dither=true`.
+
+**Device result:** Complete failure — color still black/white. **AND** introduced a severe regression: the GL16 waveform fires a full E-ink refresh cycle on every pen lift, causing visible screen flashing between every stroke (user reported "screen refreshes part way through drawing a line"). All 4 waveform calls were reverted to their original values (`"ui"` for stroke-end calls, `"partial"` without dither for `_repaintAll`).
+
+**Do not retry the `"partial"+dither` approach on stroke-end calls.** It causes visible E-ink flash and did not help color.
+
+**Current state:** Diagnostic logging added (2026-05-20, in HEAD):
+- Color menu callback logs: `colorFromString(hex)` result, `Screen:isColorEnabled()`, `Device:hasColorScreen()`
+- `_strokeColor()` logs: hex value + resulting integer color + comparison vs `COLOR_BLACK` (first stroke only)
+
+**Next step:** Deploy, select a non-black color, draw one stroke, pull device logs:
+```bash
+grep "FastNote" /mnt/onboard/.kobo/KoboReader.log
+```
+The log will show whether `colorFromString()` is parsing the hex correctly and whether `isColorEnabled()` returns true. Color rendering cannot be debugged further without this data.
+
+**Leading suspects (in order):**
+1. `Screen:isColorEnabled()` returns `false` on device → BlitBuffer allocated as BB8 grayscale → all colors collapse to gray
+2. `colorFromString("#rrggbb")` returns nil or wrong value → falls back to `COLOR_BLACK`
+3. CFA requires a different activation path not yet known
+
+### ❌ Eraser still broken
+Track A (nil-guard on `pd.tool` in `pendev.lua`) applied, 192 tests pass, no change on device. Eraser tip still draws as pen. Track B (add `logger.dbg` to log `ABS_MT_TOOL_TYPE` value in raw evdev path) still needed to confirm whether the eraser tool type is even reaching the plugin.
+
+**All 192 tests passing** throughout all changes.
 
 ### Remaining stages
 

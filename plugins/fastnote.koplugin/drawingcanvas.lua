@@ -678,7 +678,7 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
             self._stroke_min_x, self._stroke_min_y,
             self._stroke_max_x, self._stroke_max_y,
             DEFAULT_LINE_WIDTH)
-        UIManager:setDirty(self, function() return "partial", Geom:new(stroke_rect), true end)
+        UIManager:setDirty(self, function() return "ui", Geom:new(stroke_rect) end)
     end
 
     self._stroke_x     = nil
@@ -752,9 +752,7 @@ function DrawingCanvas:_repaintAll()
         local override = self._dark_mode and Blitbuffer.COLOR_WHITE or nil
         self._stroke_buf:repaintTo(self._bb, override)
     end
-    -- Use "ui" waveform for undo/redo rebuilds (faster, UI-driven, no dither needed).
-    -- Strokes are already in buffer; actual color rendering happens at stroke-end.
-    UIManager:setDirty(self, "ui")
+    UIManager:setDirty(self, "partial")
 end
 
 --- Return the Blitbuffer color for new live strokes (current ink, mode-aware).
@@ -946,7 +944,7 @@ function DrawingCanvas:_pollPen()
             end
             self._last_pen_x = nil
             self._last_pen_y = nil
-            UIManager:setDirty(self, "partial", nil, true)
+            UIManager:setDirty(self, "ui")
         end
     end)
 
@@ -1005,7 +1003,7 @@ function DrawingCanvas:_pollTouch()
                 end
                 self._last_touch_x = nil
                 self._last_touch_y = nil
-                UIManager:setDirty(self, "partial", nil, true)
+                UIManager:setDirty(self, "ui")
             end
         end
     end)
