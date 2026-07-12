@@ -79,11 +79,12 @@ fastnote.koplugin/
 ├── main.lua                   Entry point: config load, canvas open, notebook routing
 ├── drawingcanvas.lua          Drawing canvas widget — ALL input, rendering, menu, orientation,
 │                              chrome strip, and quick-menu color picker (no separate files for these)
-├── fastnote.conf.example      Documented user config (finger_draw, rotation_mode)
+├── fastnote.conf.example      Documented user config (finger_draw, rotation_mode, tighten_*, live_color_refresh, eraser_button, live_ink_style)
 ├── lib/
 │   ├── canvas_utils.lua       Pure math: compute_dirty_rect, point_in_zone, pressure_to_width
-│   ├── config.lua             Pure Lua config loader (not yet wired into main.lua — see tech-debt.md)
-│   ├── input_codes.lua        Shared Linux input event constants (BTN_*/ABS_*)
+│   ├── config.lua             Pure Lua config loader, wired via main.lua's canvas-open path
+│   ├── input_codes.lua        Shared Linux input event constants (BTN_*/ABS_*, incl. BTN_STYLUS2)
+│   ├── eraser_button.lua      Pure translation: BTN_STYLUS/BTN_STYLUS2 event → eraser tool state
 │   ├── pen_statemachine.lua   Wacom evdev state machine → high-level pen events
 │   ├── json.lua               Pure Lua JSON encoder/decoder (no KOReader deps; busted-testable)
 │   ├── stroke.lua             Stroke object: points, hitTest, bbox, paintTo, toTable/fromTable
@@ -154,14 +155,16 @@ widget code genuinely can't be unit-tested.
 
 - **Lua dialect:** LuaJIT / Lua 5.1 — see `.github/instructions/lua.instructions.md`
   (repo root) for the full rules and the bugs each rule prevents.
-- **KOReader widget patterns:** see `.github/skills/koreader-plugin/SKILL.md`
-  *(not yet added — pending import from the author's skill library)*.
 - Read the Lua instructions file before writing anything — it covers the `_`
   vs `__` gettext gotcha and other rules that have already caused real bugs
   in this codebase.
 - **Documentation changes ride with the code change that needs them** — see
   `.github/skills/documentation-as-code/SKILL.md` (repo root) for what moves
   together (doc comments, ADRs, config examples, AGENTS.md's File Map).
+- **E-ink refresh / waveform changes:** hard rules in
+  `.github/instructions/eink-refresh.instructions.md`; on-device test
+  procedure in `.github/skills/waveform-experimentation/SKILL.md` (both
+  repo root).
 
 ---
 
@@ -173,10 +176,10 @@ skip the rest.
 | Topic | What it covers | File (repo root `.agents/`) |
 |-------|-----------------|------------------------------|
 | Color / dark mode | Canonical hex storage invariant, why dark mode must be display-only | `notes/stroke-color-invariant.md` |
-| E-ink refresh / waveforms | Kaleido color waveform modes, the color-first + tighten-pass drawing design | `notes/waveform-refresh-research.md` |
+| E-ink refresh / waveforms | Kaleido color waveform modes, A2-live + deferred GLRC16 tighten-pass design | `notes/waveform-refresh-research.md` |
 | Input path architecture | Gesture vs. raw-evdev, per-flag scope, hardware eraser detection | `notes/input-path-architecture.md` |
 | Canvas widget lifecycle | `self.dimen` mutation rule, orientation re-lock, gesture zone timing | `notes/canvas-widget-gotchas.md` |
-| Known tech debt | Unwired config.lua, other deferred cleanup | `notes/tech-debt.md` |
+| Known tech debt | Deferred cleanup items and their resolutions | `notes/tech-debt.md` |
 | Storage format | SVG + embedded JSON metadata | `ADRs/ADR-001-svg-with-embedded-json-metadata.md` |
 | Source of truth | StrokeBuffer vs. BlitBuffer | `ADRs/ADR-002-strokebuffer-as-source-of-truth.md` |
 | Dual input path | Why raw evdev + gesture fallback both exist | `ADRs/ADR-003-dual-path-raw-evdev-plus-gesture-fallback.md` |

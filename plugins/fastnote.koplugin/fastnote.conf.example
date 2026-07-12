@@ -63,26 +63,98 @@ return {
     --
     debug_input_log = false,
 
-    -- develop_delay
+    -- tighten_delay
     -- -------------
-    -- Seconds of pen inactivity after which a deferred colour develop
-    -- refresh fires.  The develop refresh renders strokes in their chosen
-    -- ink colour via a full colour-capable partial refresh (Kaleido 3).
-    -- Only active on colour hardware; ignored on monochrome / emulator.
+    -- Seconds of pen inactivity after which the deferred colour "tighten"
+    -- pass fires: a single targeted GLRC16 refresh over the accumulated
+    -- stroke bounding box, revealing true ink colour (Kaleido 3). Only
+    -- active on colour hardware; ignored on monochrome / emulator.
     --
-    --   5  (default) — fire 5 seconds after the last pen-up.
+    --   2.5  (default) — matches the device-tuned constant. This value was
+    --              tuned on real hardware: lowering it risks firing the
+    --              tighten pass mid-multi-stroke writing, which briefly
+    --              locks out the pen. If you change it, re-run the
+    --              multi-stroke writing test from the
+    --              waveform-experimentation skill.
     --
-    develop_delay = 5,
+    tighten_delay = 2.5,
 
-    -- develop_enabled
+    -- tighten_enabled
     -- ---------------
-    -- Whether to perform the deferred colour develop refresh.
+    -- Whether to perform the deferred colour tighten pass.
     --
-    --   true   (default) — A2 strokes "bloom" into colour ~develop_delay
-    --              seconds after the pen lifts.
-    --   false  — draw-time A2 only; no deferred colour refresh.
+    --   true   (default) — A2 strokes tighten into full colour
+    --              ~tighten_delay seconds after the pen lifts.
+    --   false  — draw-time A2 only; no deferred colour pass.
     --              Use if you find the periodic refresh distracting.
     --
-    develop_enabled = true,
+    tighten_enabled = true,
+
+    -- live_color_refresh
+    -- -------------------
+    -- EXPERIMENTAL. Replaces the per-segment "a2" (grayscale) live refresh
+    -- with a throttled direct Screen:refreshUI call over the accumulated
+    -- dirty rect (~30 fps cap), bypassing UIManager entirely. Shows (muted)
+    -- live ink colour while drawing instead of grayscale; the tighten pass
+    -- above still fires afterwards for full colour fidelity.
+    --
+    -- Only takes effect when colour hardware AND the raw evdev pen path are
+    -- both in use — the gesture/emulator path and monochrome hardware are
+    -- never affected by this flag, regardless of its value.
+    --
+    --   false  (default) — unchanged behaviour: per-segment "a2" refresh.
+    --   true   — experimental; not yet validated on the on-device test
+    --              matrix (see the waveform-experimentation skill). Can
+    --              also be toggled live from the hamburger menu
+    --              ("Live color ink (experimental)") without editing this
+    --              file, but that toggle is session-only.
+    --
+    live_color_refresh = false,
+
+    -- eraser_button
+    -- -------------
+    -- Which raw button code the Kobo Stylus 2's hardware eraser tip sends
+    -- on your unit. The eraser tip reports as `BTN_STYLUS` (a level
+    -- signal: on while touching, off on release) on standard units, but
+    -- some units/pens ship with `BTN_STYLUS` and `BTN_STYLUS2` (the side
+    -- button) swapped.
+    --
+    --   "stylus"   (default) — eraser tip sends BTN_STYLUS. Standard wiring.
+    --   "stylus2"  — eraser tip sends BTN_STYLUS2. Try this if the eraser
+    --                end of your stylus draws instead of erasing — that
+    --                symptom means your unit has the two swapped.
+    --
+    -- The other (non-configured) code is always treated as the side button:
+    -- ignored for drawing/erasing, logged at debug level only.
+    --
+    eraser_button = "stylus",
+
+    -- live_ink_style
+    -- --------------
+    -- How live (in-progress) strokes paint into the display while the pen
+    -- is moving, on colour hardware (Kaleido 3). Never affects StrokeBuffer
+    -- -- the stroke's true colour is always recorded regardless of this
+    -- setting (ADR-002); this only changes what's shown before the tighten
+    -- pass reveals it.
+    --
+    --   "solid"  (default) -- live segments draw as solid black (dark mode:
+    --              white, which is already solid) instead of the chosen ink
+    --              colour. Matches the stock Kobo notebook app's look and
+    --              avoids the A2 live-drawing waveform's 1-bit thresholding
+    --              turning light ink colours into a faint, sparse dither
+    --              while writing. True colour appears once the tighten
+    --              pass fires (see tighten_delay above).
+    --   "color"  -- live segments draw the true ink colour (pre-Task-C2
+    --              behaviour). Symptom: colour ink looks faint / dotted
+    --              while actively drawing -- especially for lighter
+    --              colours -- until the tighten pass fires.
+    --
+    -- Ignored (no behaviour change) on monochrome hardware, whenever the
+    -- live_color_refresh experiment above is active (that path shows true
+    -- colour live on purpose, so it always wins over "solid"), and when
+    -- tighten_enabled = false (with no tighten pass, nothing would ever
+    -- repaint the true colour back over the solid ink).
+    --
+    live_ink_style = "solid",
 
 }

@@ -111,7 +111,140 @@ Fixed the flash issue; strokes still invisible in light mode live drawing.
 
 ---
 
-## Paths not yet tried / future ideas
+## UIManager flash promotion: the "automatic refresh interrupts my line" cause
+
+`frontend/ui/uimanager.lua` (~line 513): **any `"partial"` refresh submitted
+through `UIManager:setDirty` counts toward promotion to a full flashing
+refresh after `FULL_REFRESH_COUNT` refreshes — default 6** (user-settable;
+separate night-mode setting). Live drawing emits many refreshes per second,
+so per-segment `"partial"` hits the promotion almost instantly: the screen
+flashes mid-stroke and drawing is locked out during the flash.
+
+`"ui"`, `"fast"`, and `"a2"` do **not** count toward the promotion.
+Direct `Screen:refreshUI/refreshFast/...` calls bypass UIManager entirely —
+no queues, no widget repaint, no promotion counter — which is how
+pencil.koplugin sustains throttled live color refreshes (see
+`.agents/planning/pencil-koplugin-research.md`).
+
+Consequence for this plugin: per-segment `"partial"` was doubly wrong —
+too slow (GLRC16 latency, above) *and* flash-promoted. One-shot uses of
+`"partial"` (+dither) for `_repaintAll`/tighten remain correct.
+
+---
+
+## The color gate chain and the 8bpp trap (verified from source, 2026-07)
+
+Everything below is read directly from this repo's KOReader sources — not
+inferred. If ANY link in this chain is off, **no plugin code can ever
+produce color**, and every symptom looks like "the waveform isn't working."
+
+1. **`Screen:isColorEnabled()`** (`frontend/device/generic/device.lua`
+   ~line 216): returns the `color_rendering` user setting if set, else
+   defaults to `isColorScreen()` (true on Libra Colour). So color is ON by
+   default — false only if the user ever toggled *top menu → gear →
+   Screen → Color rendering* off.
+2. **The startup 8bpp trap** (`platform/kobo/koreader.sh`,
+   `ko_do_fbdepth()`): on color panels, if `color_rendering = false` in
+   `settings.reader.lua`, the launcher runs `fbdepth -d 8` — the
+   framebuffer becomes **8bpp grayscale with CFA processing skipped
+   entirely**. Every blit is converted to gray at paint time;
+   no waveform choice can bring color back. Otherwise it enforces 32bpp.
+   `crash.log` states which branch ran: "Switching fb bitdepth to
+   8bpp (to disable CFA)" vs "...to 32bpp".
+3. **`Device:hasKaleidoWfm`** (`frontend/device/kobo/device.lua` ~line
+   799): `yes` only when `hasColorScreen() and isMTK()` — true on
+   KoboMonza. **`canHWDither`** (~line 795): `yes` on Mk7/MTK.
+4. Kaleido promotion (GLRC16/GCC16 + CFA flag) then additionally requires
+   `dither=true` on the refresh and `Screen.hw_dithering` (see the
+   promotion table above).
+
+**Diagnostic implication:** "line refreshes but only ever gets more
+visible, never colored" — check gates 1–2 *first* (a device-side settings
+question), before touching waveform code. A one-tap check: KOReader's own
+UI shows color accents (e.g. colored book covers in the file browser) only
+when the chain is intact.
+
+**In-plugin tooling (Task C1, implemented):** the canvas hamburger menu's
+"Color self-test" row paints a reference-bar pattern (one bar per
+`PALETTE` color, plus black/white references) straight into the display
+buffer and forces a `"full"` + dither=true refresh (→ GCC16 on an intact
+pipeline), then shows every gate above (`_colorGateSnapshot` /
+`_colorGateLogLine` in `drawingcanvas.lua`) next to it. Bars in color means
+the pipeline is intact and any remaining issue is plugin-side; bars gray
+means a gate above is broken (usually gate 1/2, the color_rendering /
+8bpp trap) and no plugin change can help until that's fixed. The same
+gate snapshot is also logged once at canvas init, and a one-per-canvas-open
+warning fires if `has_color_hw` is true but `isColorEnabled()` is false.
+
+---
+
+## Correction (2026-07): A2 renders colored ink as sparse 1-bit dither, not "grayscale"
+
+Earlier revisions of this note said color ink "renders as grayscale"
+under A2 live drawing. That's imprecise in a way that matters: A2 is
+**1-bit** — each pixel is thresholded to pure black or pure white. A
+colored (or gray) line becomes a **sparse dither pattern**, and the
+lighter the ink color's luminance, the fewer black pixels survive — on
+device this reads as a **very faint, dotted line** in light mode. Dark
+mode looks solid because ink is forced to white on black (maximum
+contrast, no thresholding loss). Reported on hardware 2026-07; consistent
+with A2's definition. The tighten pass (or any GLR16/GLRC16 refresh over
+the region) re-renders the region at full depth, which is why the line
+"becomes more visible" afterward.
+
+Design consequence: if solid live ink is wanted under A2, the *display
+buffer* copy of the live stroke must be painted near-black (true color
+stays in StrokeBuffer; the tighten repaints true color before its
+refresh). See `.agents/plans/color-pipeline-diagnosis-and-fix.md`.
+
+**In-plugin implementation (Task C2, implemented):** `live_ink_style`
+config key (`lib/config.lua`, default `"solid"`) selects this behavior.
+`lib/canvas_utils.lua`'s `live_ink_mode(style, dark_mode, has_color_hw,
+live_color_refresh_active)` is the pure decision function (spec-tested in
+`spec/canvas_utils_spec.lua`); `drawingcanvas.lua`'s `_drawSegment` calls it
+per segment and sets `self._display_diverged = true` whenever it paints
+solid ink. The tighten pass (`_scheduleTighten`'s fired closure) checks that
+flag and calls `_rebuildDisplayFromStrokes()` — a helper shared with
+`_repaintAll` and `loadPage` that replays StrokeBuffer's true colors into
+`_bb` and clears the flag — before firing its `"partial"`+dither refresh, so
+GLRC16 always develops the region's real color rather than re-promoting the
+solid black already on screen.
+
+---
+
+## Fact-check: "Implementing Real-Time Color Stylus Drawing" paper (2026-07)
+
+An externally produced guide reviewed during the color investigation.
+Verdicts against this repo's sources and observed device behavior:
+
+| Claim | Verdict | Notes |
+|---|---|---|
+| Kaleido 3 = mono film + CFA, 300/150 PPI; MTK EPDC | ✅ Correct | Matches known hardware. |
+| Two-phase render: fast live pass + high-fidelity pass on pen-up | ✅ Correct | This is exactly the A2-live + tighten design (and the stock app's behavior). |
+| A2 is 1-bit mono, unusable for color | ✅ Correct | Matches this note. |
+| BlitBuffer must be 32-bit for color | ✅ Correct, incomplete | Necessary but not sufficient — `Screen.bb` itself is 8bpp if the color_rendering/8bpp trap is sprung; the plugin's own BB type can't fix that. |
+| A hardware "FastGLR" pen waveform draws **in color** during the live phase | ❌ Unsupported | No such mode exists in the KoboMonza hwtcon map (see table at top). The fast modes are DU/A2, both mono. No online source for "FastGLR" on this hardware was found. |
+| Use `"fast"` for the live phase | ❌ Wrong for this device | `"fast"` = DU, broken at 32bpp on KoboMonza (invisible strokes — see THE CRITICAL BUG above). |
+| Use abstract modes, tight bboxes, avoid full-screen flashes | ✅ Correct | Standard practice; matches this plugin. |
+| Pen-up pass: `"ui"` or `"partial"` | ⚠️ Partial | `"partial"`+dither (→ GLRC16) is the color-correct choice on this device; plain `"ui"` never gets CFA processing. |
+
+### Throttled direct Screen:refreshUI for live color (pencil.koplugin technique)
+Paint into the framebuffer, accumulate a dirty rect, and fire a direct
+`Screen:refreshUI(rect)` (AUTO waveform) at most every 16–33 ms, bypassing
+UIManager. pencil.koplugin ships this and users report working live color
+drawing on this exact device+pen. Would show (probably muted) color during
+the stroke while keeping the GLRC16 tighten for final fidelity. Details,
+caveats, and the comparison: `.agents/planning/pencil-koplugin-research.md`.
+**Implemented behind `live_color_refresh` (default off), pending device
+validation.** `drawingcanvas.lua`: `_useLiveColorRefresh`,
+`_liveColorRefresh`, `_flushLiveRefresh`; throttle interval
+`LIVE_REFRESH_INTERVAL` (0.033 s ≈ 30 fps). Only takes the new path when
+color hardware AND the raw evdev pen path are both active — mono hardware
+and the gesture/emulator path are unaffected regardless of the flag. Flag
+is also toggleable live from the hamburger menu ("Live color ink
+(experimental)"), session-only. Run the on-device test matrix in
+`.github/skills/waveform-experimentation/SKILL.md` (flag off for
+regression, flag on for the new path) before considering a default flip.
 
 ### ~~Deferred colour refresh timer~~ — IMPLEMENTED (see below)
 Originally proposed as: use an idle timer (like `_scheduleIdleSave`) to fire
@@ -127,9 +260,14 @@ during the refresh and breaks the user's ability to keep writing.
 cost of a flash.  Reasonable to offer as an optional "refresh now" gesture.
 **Not implemented.**
 
-### waveform_a2 for live drawing
-`HWTCON_WAVEFORM_MODE_A2` is 1-bit, even faster than DU.  Would share the
-same 32bpp CFA issues as DU and likely be worse.  **Not worth trying.**
+### ~~waveform_a2 for live drawing~~ — NOW THE APPROACH
+`HWTCON_WAVEFORM_MODE_A2` is 1-bit, even faster than DU.  Initially assumed
+it would share DU's 32bpp CFA issues, but on-device testing showed A2
+works correctly at 32bpp on KoboMonza — strokes are visible and fast.
+Color ink renders as sparse 1-bit dither during live drawing (see the
+2026-07 correction section — light colors read as faint/dotted); the
+deferred tighten pass (GLRC16) reveals true color after pen inactivity.
+**Now the default for all live drawing.**
 
 ### HWTCON_FLAG_CFA_SKIP for DU/A2
 The commented-out code in `refresh_kobo_mtk` shows this was attempted
@@ -159,27 +297,46 @@ waveform behaviour generalises, but device-specific mappings may differ.
 | `waveform_color` = GCC16, full 4096-colour, heavy flash | ✅ Broadly correct | GCC16 is Kaleido full; it is used for full-page repaints, not live drawing. Not inherently "flashing" in the GC16 sense but it is a full-quality slow mode. |
 | `_isKaleidoWaveFormMode` checks `waveform_color` and `waveform_color_reagl` | ✅ Correct | Confirmed at lines 114-115. |
 | RGB888 @ 32bpp + `waveform_fast` → dithered muted colour lines visible | ❌ Inaccurate for our device | Actual result: strokes are **invisible** (not visible-but-dithered). Driver fails to produce any output, not an output-with-dithering. |
-| Async timer to defer full colour refresh | ✅ Valid technique | Not implemented yet; deferred. |
+| Async timer to defer full colour refresh | ✅ Valid technique | Implemented as the "tighten pass" — GLRC16 fires 2.5s after last pen-up. |
 | `"partial" + dither=true` → GCC16 | ❌ Wrong | REAGL waveform + dither → **GLRC16** (Kaleido REAGL). GCC16 is only reached via `"full"` + dither (confirmed in mxc_update promotion table). |
 
 ---
 
-## Current fastnote waveform decisions (color-first + tighten pass)
+## Current fastnote waveform decisions (A2 live + deferred tighten)
 
-The design goal, set from direct observation of the stock Kobo notebook app:
-ink appears in its selected color continuously as the user writes — never a
-fast-B&W-then-promote flash mid-stroke, since any refresh while the user is
-actively touching the screen interrupts writing. A single higher-quality
-"tighten" refresh follows, but only after the user visibly pauses.
+The design: all live drawing uses A2 (1-bit B&W, fastest possible) regardless
+of ink color. Color ink renders as sparse 1-bit dither during active writing
+(faint/dotted for light colors — see the 2026-07 correction section) — the user
+sees instant, uninterrupted strokes. After 2.5s of pen inactivity, a single
+targeted GLRC16 refresh fires over the accumulated stroke bounding box to
+reveal true color. This matches the stock Kobo notebook app's observed
+behaviour.
+
+The earlier approach (GLRC16 per live segment) was too slow — GLRC16 takes
+~300-500ms per update, causing visible "chunking" that broke up lines
+mid-stroke and made drawing unusable.
 
 | Operation | Waveform | Colour HW (KoboMonza) | Non-colour HW |
 |---|---|---|---|
 | Full repaint (`_repaintAll`) | `"partial"` + dither=true | → GLRC16 | → GLR16 |
-| Live pen/touch segment (`_drawSegment` → `_refreshRect`) | `"partial"` + dither=true, per segment | → GLRC16 | `"a2"` (unchanged) |
-| Pen-up / touch-up | — (no extra refresh; last segment's partial already covers it) | schedules the tighten timer instead | `"a2"` (unchanged) |
-| Tighten pass (fires `COLOR_TIGHTEN_DELAY` = 2.5s after last pen-up, cancelled on next pen-down) | `"partial"` + dither=true, targeted to accumulated stroke bbox | → GLRC16 | N/A — mono HW never schedules a tighten |
+| Live pen/touch segment (`_drawSegment` → `_refreshRect`) | `"a2"` (fast B&W) | → A2. Display ink vs. stored ink depends on `live_ink_style` (Task C2, default `"solid"`): `"solid"` paints the segment solid black into `_bb` (StrokeBuffer still stores the true color, ADR-002) — avoids A2 thresholding light ink colors into a faint dither; `"color"` paints the true color into `_bb`, which A2 shows as a 1-bit dither. Either way `_useLiveColorRefresh()` being active forces true color (precedence: `live_color_refresh` > `live_ink_style`). See `lib/canvas_utils.lua`'s `live_ink_mode`. | → A2. `live_ink_style` has no effect (mono hardware always draws true ink; there's no A2 color-dither problem to solve) |
+| Pen-up / touch-up | — | schedules the tighten timer | `"a2"` |
+| Tighten pass (fires `COLOR_TIGHTEN_DELAY` = 2.5s after last pen-up, cancelled on next pen-down) | `"partial"` + dither=true, targeted to accumulated stroke bbox | → GLRC16 (reveals true color). If any live segment since the last full rebuild painted solid ink (`live_ink_style=="solid"`), `_bb` first gets rebuilt from StrokeBuffer's true colors (`_rebuildDisplayFromStrokes`) before this refresh fires — skipped when nothing diverged | N/A — mono HW never schedules a tighten |
 
-Implementation: `drawingcanvas.lua` — `_scheduleTighten`, `_cancelTighten`,
-`_expandTightenRect`, `COLOR_TIGHTEN_DELAY`. Cancelled on every pen-down
-(never fires mid-session) and on any full-quality refresh path
-(`_repaintAll`, `loadPage`, `_doClose`) that would supersede it.
+Implementation: `drawingcanvas.lua` — `_scheduleTighten`,
+`_cancelTightenTimer` (pen-down: cancels timer only, preserves rect),
+`_cancelTighten` (full reset: cancels timer AND clears rect),
+`_expandTightenRect`, `COLOR_TIGHTEN_DELAY`.
+
+Critical detail: pen-down calls `_cancelTightenTimer()` (timer only), so
+the bbox accumulates across multiple strokes in a writing session. The
+rect is only cleared when: (a) the tighten fires, (b) `_repaintAll`, (c)
+`loadPage`, or (d) `_doClose` — these do full-quality refreshes that make
+the tighten redundant.
+
+The widget sets `self.dithered = has_color_hw` so UIManager knows to honor
+dithering hints from the refresh stack. Without this, intervening
+widget-dirty refreshes can overwrite the tighten's GLRC16 color with
+grayscale. The dither→GLRC16 promotion also requires `Screen.hw_dithering`
+(true by default on MTK Kobo) and `Screen:isColorEnabled()` (true by
+default on color screens).

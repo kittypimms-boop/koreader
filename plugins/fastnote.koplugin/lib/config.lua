@@ -36,14 +36,69 @@ Config.DEFAULTS = {
     -- false (default) = off.  Also toggleable live via the hamburger menu.
     debug_input_log = false,
 
-    --- Seconds of pen inactivity after which a deferred colour develop refresh fires.
-    -- Only takes effect on colour hardware (Kaleido 3).  Default: 5.
-    develop_delay = 5,
+    --- Seconds of pen inactivity after which the deferred colour "tighten"
+    -- pass fires -- a single targeted GLRC16 refresh over the accumulated
+    -- stroke bounding box (drawingcanvas.lua: _scheduleTighten).  Only takes
+    -- effect on colour hardware (Kaleido 3).
+    -- Default: 2.5 -- matches the device-tuned COLOR_TIGHTEN_DELAY constant.
+    -- This value was tuned on real hardware: shorter delays fire the tighten
+    -- pass mid-multi-stroke writing and briefly lock out the pen. See
+    -- .github/instructions/eink-refresh.instructions.md before lowering it,
+    -- and re-run the multi-stroke writing test in the waveform-experimentation
+    -- skill if you do.
+    tighten_delay = 2.5,
 
-    --- Whether to perform the deferred colour develop refresh at all.
-    -- true (default) = refresh strokes in full colour ~5 s after the pen lifts.
-    -- false = draw-time A2 only (no deferred colour bloom).
-    develop_enabled = true,
+    --- Whether to perform the deferred colour tighten pass at all.
+    -- true (default) = strokes tighten into full colour ~tighten_delay
+    -- seconds after the pen lifts (colour hardware only).
+    -- false = draw-time A2 only (no deferred colour pass).
+    tighten_enabled = true,
+
+    --- EXPERIMENTAL. Throttled direct-refresh live colour drawing
+    -- (pencil.koplugin technique; see
+    -- .agents/planning/pencil-koplugin-research.md candidate 1). Only takes
+    -- effect when colour hardware AND the raw evdev pen path are both in
+    -- use -- the gesture/emulator path and monochrome hardware are never
+    -- affected by this flag.
+    -- false (default) = unchanged per-segment "a2" refresh behaviour.
+    -- true  = live segments blit directly into the framebuffer and refresh
+    --         via a throttled direct Screen:refreshUI call instead, showing
+    --         (muted) live colour. Not yet validated on the on-device test
+    --         matrix -- see .github/skills/waveform-experimentation/SKILL.md
+    --         before relying on this outside of testing.
+    live_color_refresh = false,
+
+    --- Which raw button code the hardware eraser tip sends on this unit.
+    -- The Kobo Stylus 2 eraser tip reports as BTN_STYLUS (level signal)
+    -- while the side button reports as BTN_STYLUS2 -- but some units/pens
+    -- ship with the two swapped. See lib/eraser_button.lua and
+    -- .agents/plans/color-drawing-fix-and-menu-access.md Fix F.
+    -- "stylus"  (default) -- eraser tip sends BTN_STYLUS (standard wiring).
+    -- "stylus2" -- eraser tip sends BTN_STYLUS2 (swapped unit). Symptom
+    --             that tells you to try this: the eraser end draws instead
+    --             of erasing.
+    eraser_button = "stylus",
+
+    --- How live (in-progress) strokes are painted into the display buffer
+    -- on color hardware while the pen is moving. See ADR-002: this only
+    -- ever affects the display cache -- StrokeBuffer always keeps the
+    -- stroke's true color regardless of this setting.
+    -- "solid" (default) -- live segments paint as solid black (dark mode:
+    --             white, already solid) instead of the true ink color.
+    --             Matches the stock Kobo notebook's live-drawing look and
+    --             avoids A2's 1-bit thresholding turning light ink colors
+    --             into a faint, sparse dither while writing. True color
+    --             is revealed by the deferred tighten pass after the pen
+    --             stops moving.
+    -- "color" -- live segments paint the true ink color (today's
+    --             pre-Task-C2 behavior). Symptom: colored ink looks faint
+    --             / dotted while actively drawing, especially for light
+    --             colors, until the tighten pass fires.
+    -- Ignored (no behavior change) on monochrome hardware, and whenever
+    -- the live_color_refresh experiment is active for a stroke -- that
+    -- path exists specifically to show true color live, so it always
+    -- wins over "solid" (see lib/canvas_utils.lua's live_ink_mode).
+    live_ink_style = "solid",
 }
 
 --- Load a config file and return the merged result.
@@ -64,9 +119,20 @@ function Config.load(path)
 
     -- Merge defaults for any key absent from the file.
     -- We copy into a fresh table so mutations by the caller cannot affect DEFAULTS.
+    --
+    -- NOTE: this must NOT be written as `out[k] = (cfg[k] ~= nil) and cfg[k] or v`.
+    -- That ternary-style and/or has a hole (see lua.instructions.md): when
+    -- cfg[k] is explicitly `false`, `cfg[k] ~= nil` is true, but the second
+    -- `and` operand (`cfg[k]`) is itself false, so the whole expression
+    -- falls through to `v` -- silently discarding the user's explicit
+    -- `false` and replacing it with the default. Use an explicit if instead.
     local out = {}
     for k, v in pairs(Config.DEFAULTS) do
-        out[k] = (cfg[k] ~= nil) and cfg[k] or v
+        if cfg[k] ~= nil then
+            out[k] = cfg[k]
+        else
+            out[k] = v
+        end
     end
 
     return out
