@@ -339,7 +339,13 @@ function DictQuickLookup:init()
         title = self.displaydictname,
         with_bottom_line = true,
         bottom_v_padding = 0, -- padding handled below
-        close_callback = function() self:onClose() end,
+        close_callback = function()
+            if self.in_definition_search then
+                self:endFindInDefinition()
+                return true
+            end
+            self:onClose()
+        end,
         close_hold_callback = function() self:onHoldClose() end,
         -- visual hint: title left aligned for dict, centered for Wikipedia
         align = self.is_wiki and "center" or "left",
@@ -1232,10 +1238,10 @@ function DictQuickLookup:_instantiateScrollWidget()
             image_alt_face = self.image_alt_face,
             images = self.images,
             highlight_text_selection = true,
-            -- on_clear_search = function()
-            --     self.in_definition_search = false
-            --     self.stw_widget:setTapScrollEnabled(true)
-            -- end,
+            on_clear_search = function()
+                self.in_definition_search = false
+                self.stw_widget:setTapScrollEnabled(true)
+            end,
             -- We need to override the widget's paintTo method to draw our indicator
             paintTo = self.allow_key_text_selection and function(widget, bb, x, y)
                 -- Call original paintTo from ScrollTextWidget
@@ -1643,10 +1649,7 @@ end
 
 function DictQuickLookup:onCloseWithKeys(no_clear)
     if self.in_definition_search then
-        local _, content_widget = self:_getScrollAndContentWidgets()
-        if content_widget and content_widget.clearSearch then
-            content_widget:clearSearch(true)
-        end
+        self:endFindInDefinition()
         return true
     end
     if self.allow_key_text_selection and self.nt_text_selector_indicator then
@@ -1769,6 +1772,16 @@ function DictQuickLookup:findInDefinitionNextOrPreviousPage(direction)
     return false
 end
 
+function DictQuickLookup:endFindInDefinition(content_widget)
+    if not content_widget then
+        local dummy
+        dummy, content_widget = self:_getScrollAndContentWidgets()
+    end
+    if content_widget and content_widget.clearSearch then
+        content_widget:clearSearch(true)
+    end
+end
+
 function DictQuickLookup:searchInDefinition(text)
     if not text then return end
 
@@ -1790,7 +1803,7 @@ function DictQuickLookup:searchInDefinition(text)
             timeout = 2,
         })
         if self.in_definition_search then
-            content_widget:clearSearch(true)
+            self:endFindInDefinition(content_widget)
         end
     end
 end
@@ -1822,6 +1835,19 @@ function DictQuickLookup:lookupInputWord(hint)
     local buttons = {
         {
             {
+                text = _("Find in definition"),
+                callback = function()
+                    local text = self.input_dialog:getInputText()
+                    if text ~= "" and not text:match("^%s*$") then
+                        UIManager:close(self.input_dialog)
+                        self:searchInDefinition(text)
+                    end
+                end,
+            },
+            -- 'Search with preset' will be inserted here
+        },
+        {
+            {
                 text = _("Translate"),
                 callback = function()
                     local text = self.input_dialog:getInputText()
@@ -1843,22 +1869,6 @@ function DictQuickLookup:lookupInputWord(hint)
                     end
                 end,
             },
-        },
-        {
-            {
-                text = _("Find in definition"),
-                enabled_func = function()
-                    return self.is_html and self.shw_widget
-                end,
-                callback = function()
-                    local text = self.input_dialog:getInputText()
-                    if text ~= "" and not text:match("^%s*$") then
-                        UIManager:close(self.input_dialog)
-                        self:searchInDefinition(text)
-                    end
-                end,
-            },
-            -- 'Search with preset' will be inserted here
         },
         {
             {
@@ -1884,7 +1894,7 @@ function DictQuickLookup:lookupInputWord(hint)
     }
     local preset_names = Presets.getPresets(self.ui.dictionary.preset_obj)
     if preset_names and #preset_names > 0 then
-        table.insert(buttons[2], {
+        table.insert(buttons[1], {
             text = _("Search with preset"),
             callback = function()
                 local text = self.input_dialog:getInputText()

@@ -500,8 +500,8 @@ function Kindle:initNetworkManager(NetworkMgr)
                 signal_level = string.format("%d/%d", network.signal, network.signal_max),
                 signal_quality = qualities[network.signal],
                 -- See comment above about netid being unfortunately optional...
-                connected = (current_profile.netid and current_profile.netid ~= -1 and current_profile.netid == network.netid)
-                         or (current_profile.netid == nil and current_profile.essid ~= "" and current_profile.essid == network.essid),
+                connected = current_profile and ((current_profile.netid and current_profile.netid ~= -1 and current_profile.netid == network.netid)
+                         or (current_profile.netid == nil and current_profile.essid ~= "" and current_profile.essid == network.essid)),
                 flags = network.key_mgmt,
                 ssid = network.essid ~= "" and network.essid,
                 password = password,
@@ -1297,6 +1297,7 @@ function KindleTouch:init()
         device = self,
         batt_capacity_file = "/sys/devices/system/yoshi_battery/yoshi_battery0/battery_capacity",
         is_charging_file = "/sys/devices/platform/fsl-usb2-udc/charging",
+        hall_file = "/sys/devices/platform/eink_hall/hall_enable",
     }
     self.input = require("device/input"):new{
         device = self,
@@ -1798,6 +1799,7 @@ function KindleBasic4:init()
         batt_capacity_file = "/sys/class/power_supply/bd71827_bat/capacity",
         is_charging_file = "/sys/class/power_supply/bd71827_bat/charging",
         batt_status_file = "/sys/class/power_supply/bd71827_bat/status",
+        hall_file = "/sys/devices/platform/eink_hall/hall_enable",
     }
 
     -- Enable the so-called "fast" mode, so as to prevent the driver from silently promoting refreshes to REAGL.

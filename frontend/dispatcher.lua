@@ -33,13 +33,16 @@ local KoptOptions = require("ui/data/koptoptions")
 local Device = require("device")
 local Event = require("ui/event")
 local FileManager = require("apps/filemanager/filemanager")
+local Key = require("device/key")
 local Notification = require("ui/widget/notification")
 local ReaderDictionary = require("apps/reader/modules/readerdictionary")
 local ReaderFooter = require("apps/reader/modules/readerfooter")
 local ReaderHighlight = require("apps/reader/modules/readerhighlight")
 local ReaderTypography = require("apps/reader/modules/readertypography")
+local ReaderView = require("apps/reader/modules/readerview")
 local ReaderZooming = require("apps/reader/modules/readerzooming")
 local Screen = Device.screen
+local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
 local util = require("util")
 local _ = require("gettext")
@@ -222,6 +225,9 @@ local settingsList = {
     set_highlight_action = {category="string", event="SetHighlightAction", title=_("Set highlight action"), args_func=ReaderHighlight.getHighlightActions, reader=true},
     cycle_highlight_action = {category="none", event="CycleHighlightAction", title=_("Cycle highlight action"), reader=true},
     cycle_highlight_style = {category="none", event="CycleHighlightStyle", title=_("Cycle highlight style"), reader=true, separator=true},
+    ----
+    set_overlap_style = {category="string", event="SetOverlapStyle", title=_("Set page overlap style"), args_func=ReaderView.getOverlapStyles, reader=true},
+    cycle_overlap_style = {category="none", event="CycleOverlapStyle", title=_("Cycle page overlap style"), reader=true, separator=true},
     ----
     flush_settings = {category="none", event="FlushSettings", arg=true, title=_("Save book metadata"), reader=true, separator=true},
     ----
@@ -482,6 +488,9 @@ local dispatcher_menu_order = {
     "set_highlight_action",
     "cycle_highlight_action",
     "cycle_highlight_style",
+    ----
+    "set_overlap_style",
+    "cycle_overlap_style",
     ----
     "flush_settings",
     ----
@@ -793,6 +802,7 @@ function Dispatcher._removeFromOrder(location, settings, item)
         end
     end
     util.tableRemoveValue(actions, "settings", "quickmenu_separators", item)
+    util.tableRemoveValue(actions, "settings", "quickmenu_action_names", item)
 end
 
 -- Get a textual representation of the enabled actions to display in a menu item.
@@ -1095,7 +1105,7 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
                             caller.updated = true
                         end
                     end
-                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                    touchmenu_instance:updateItems()
                 end
             end,
             sub_item_table = submenu,
@@ -1110,7 +1120,7 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
         enabled_func = function()
             return location[settings] and Dispatcher:_itemsCount(location[settings]) > 1 or false
         end,
-        callback = function(touchmenu_instance)
+        callback = function()
             Dispatcher._sortActions(caller, location[settings])
         end,
         keep_menu_open = true,
@@ -1130,6 +1140,7 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
                     actions.settings.quickmenu_separators = nil
                     actions.settings.keep_open_on_apply = nil
                     actions.settings.anchor_quickmenu = nil
+                    actions.settings.quickmenu_position = nil
                     util.tableRemoveValue(actions, "settings", "show_as_quickmenu")
                     caller.updated = true
                 elseif util.tableGetValue(actions, "settings", "execute_one_by_one") then
@@ -1156,6 +1167,7 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
                 actions.settings.quickmenu_separators = nil
                 actions.settings.keep_open_on_apply = nil
                 actions.settings.anchor_quickmenu = nil
+                actions.settings.quickmenu_position = nil
                 caller.updated = true
             end
         end,
@@ -1175,6 +1187,87 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
             end
         end,
         separator = true,
+    })
+    -- @translators position in the screen
+    local pos_text_default = _("center")
+    local pos_text = {
+        y = { [0] = _("top"), [1] = _("bottom") },
+        x = { [0] = _("left"), [1] = _("right") },
+    }
+    local function genPosMenuItem(axis, value)
+        local actions = location[settings]
+        return {
+            text = value and pos_text[axis][value] or pos_text_default,
+            checked_func = function()
+                if util.tableGetValue(actions, "settings", "anchor_quickmenu") then
+                    return false
+                end
+                local pos = util.tableGetValue(actions, "settings", "quickmenu_position")
+                return (not pos and not value) or (pos and pos[axis] == value)
+            end,
+            radio = true,
+            callback = function()
+                local pos = util.tableGetValue(actions, "settings", "quickmenu_position")
+                if not (pos and pos[axis] == value) then
+                    if value then
+                        util.tableSetValue(actions, value, "settings", "quickmenu_position", axis)
+                    else
+                        util.tableRemoveValue(actions, "settings", "quickmenu_position", axis)
+                    end
+                    util.tableRemoveValue(actions, "settings", "anchor_quickmenu")
+                    caller.updated = true
+                end
+            end,
+            separator = value == 1,
+        }
+    end
+    local pos_sub_item_table = {
+        genPosMenuItem("y", 0),
+        genPosMenuItem("y"),
+        genPosMenuItem("y", 1),
+        genPosMenuItem("x", 0),
+        genPosMenuItem("x"),
+        genPosMenuItem("x", 1),
+        not util.tableGetValue(location[settings], "settings", "name") and { -- for gestures only
+            text = _("gesture position"),
+            checked_func = function()
+                return util.tableGetValue(location[settings], "settings", "anchor_quickmenu")
+            end,
+            radio = true,
+            callback = function()
+                if not util.tableGetValue(location[settings], "settings", "anchor_quickmenu") then
+                    util.tableSetValue(location[settings], true, "settings", "anchor_quickmenu")
+                    util.tableRemoveValue(location[settings], "settings", "quickmenu_position")
+                    caller.updated = true
+                end
+            end,
+        } or nil,
+    }
+    table.insert(menu, {
+        text_func = function()
+            local pos = util.tableGetValue(location[settings], "settings", "quickmenu_position")
+            if not pos and not util.tableGetValue(location[settings], "settings", "anchor_quickmenu") then
+                return _("QuickMenu position") -- center by default, no indication
+            end
+            local text
+            if pos then
+                text = string.format("%s %s", pos.y and pos_text.y[pos.y] or pos_text_default,
+                                              pos.x and pos_text.x[pos.x] or pos_text_default)
+            else
+                text = _("gesture position")
+            end
+            return T(_("QuickMenu position: %1"), text)
+        end,
+        enabled_func = function()
+            return util.tableGetValue(location[settings], "settings", "show_as_quickmenu") or false
+        end,
+        sub_item_table = pos_sub_item_table,
+        hold_callback = function(touchmenu_instance) -- reset to default
+            util.tableRemoveValue(location[settings], "settings", "anchor_quickmenu")
+            util.tableRemoveValue(location[settings], "settings", "quickmenu_position")
+            caller.updated = true
+            touchmenu_instance:updateItems()
+        end,
     })
     table.insert(menu, {
         text = _("Keep QuickMenu open"),
@@ -1196,6 +1289,84 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
             end
         end,
     })
+    table.insert(menu, {
+        text = _("Rename QuickMenu actions"),
+        enabled_func = function()
+            return util.tableGetValue(location[settings], "settings", "show_as_quickmenu") or false
+        end,
+        checked_func = function()
+            return util.tableGetValue(location[settings], "settings", "quickmenu_action_names")
+        end,
+        check_callback_updates_menu = true,
+        callback = function(touchmenu_instance)
+            local function rename_update_func()
+                caller.updated = true
+                touchmenu_instance:updateItems()
+            end
+            Dispatcher.renameQuickMenuActions(location[settings], rename_update_func)
+        end,
+        hold_callback = function(touchmenu_instance) -- reset all custom names
+            util.tableRemoveValue(location[settings], "settings", "quickmenu_action_names")
+            caller.updated = true
+            touchmenu_instance:updateItems()
+        end,
+        separator = true,
+    })
+    -- items from Gestures plugin
+end
+
+function Dispatcher.renameQuickMenuActions(actions, rename_update_func)
+    local rename_callback, rename_hold_callback
+    rename_callback = function(action, quickmenu)
+        local InputDialog = require("ui/widget/inputdialog")
+        local name_input
+        name_input = InputDialog:new{
+            title = _("Enter action name"),
+            description = T(_("Action: %1"), action.text),
+            input = util.tableGetValue(actions, "settings", "quickmenu_action_names", action.key) or action.text,
+            buttons = {{
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(name_input)
+                    end,
+                },
+                {
+                    text = _("Default"),
+                    callback = function()
+                        name_input:setInputText(action.text, nil, false)
+                    end,
+                },
+                {
+                    text = _("Save"),
+                    callback = function()
+                        local new_name = name_input:getInputText()
+                        if new_name == "" or new_name == action.text then -- reset custom name
+                            util.tableRemoveValue(actions, "settings", "quickmenu_action_names", action.key)
+                        else
+                            util.tableSetValue(actions, new_name, "settings", "quickmenu_action_names", action.key)
+                        end
+                        UIManager:close(name_input)
+                        UIManager:close(quickmenu)
+                        rename_update_func()
+                        Dispatcher._showAsMenu(actions, nil, rename_callback, rename_hold_callback)
+                    end,
+                },
+            }},
+        }
+        UIManager:show(name_input)
+        name_input:onShowKeyboard()
+    end
+    rename_hold_callback = function(action, quickmenu) -- reset custom name
+        if util.tableGetValue(actions, "settings", "quickmenu_action_names", action.key) then
+            util.tableRemoveValue(actions, "settings", "quickmenu_action_names", action.key)
+            UIManager:close(quickmenu)
+            rename_update_func()
+            Dispatcher._showAsMenu(actions, nil, rename_callback, rename_hold_callback)
+        end
+    end
+    Dispatcher._showAsMenu(actions, nil, rename_callback, rename_hold_callback)
 end
 
 function Dispatcher:isActionEnabled(action)
@@ -1214,7 +1385,7 @@ function Dispatcher:isActionEnabled(action)
     return not disabled
 end
 
-function Dispatcher._showAsMenu(settings, exec_props)
+function Dispatcher._showAsMenu(settings, exec_props, rename_callback, rename_hold_callback)
     local title = settings.settings.name
     local keep_open_on_apply = settings.settings.keep_open_on_apply
     local display_list = Dispatcher.getDisplayList(settings)
@@ -1233,22 +1404,34 @@ function Dispatcher._showAsMenu(settings, exec_props)
         }})
     end
     for _, v in ipairs(display_list) do
+        local text = util.tableGetValue(settings, "settings", "quickmenu_action_names", v.key) -- custom name
+        if text and rename_callback then -- rename mode
+            text = "\u{F040} " .. text -- "pen" symbol
+        end
         table.insert(buttons, {{
-            text = v.text,
-            enabled = Dispatcher:isActionEnabled(settingsList[v.key]),
+            text = text or v.text,
+            enabled = rename_callback ~= nil or Dispatcher:isActionEnabled(settingsList[v.key]),
             menu_style = true,
             callback = function()
-                UIManager:close(quickmenu)
-                Dispatcher:execute({[v.key] = settings[v.key]})
-                if keep_open_on_apply and not util.stringStartsWith(v.key, "touch_input") then
-                    quickmenu:setTitle(title)
-                    UIManager:show(quickmenu)
+                if rename_callback then
+                    rename_callback(v, quickmenu)
+                else
+                    UIManager:close(quickmenu)
+                    Dispatcher:execute({[v.key] = settings[v.key]})
+                    if keep_open_on_apply and not util.stringStartsWith(v.key, "touch_input") then
+                        quickmenu:setTitle(title)
+                        UIManager:show(quickmenu)
+                    end
                 end
             end,
             hold_callback = function()
-                if v.key:sub(1, 13) == "profile_exec_" then
-                    UIManager:close(quickmenu)
-                    UIManager:sendEvent(Event:new(settingsList[v.key].event, settingsList[v.key].arg, { qm_show = true }))
+                if rename_hold_callback then
+                    rename_hold_callback(v, quickmenu)
+                else
+                    if v.key:sub(1, 13) == "profile_exec_" then
+                        UIManager:close(quickmenu)
+                        UIManager:sendEvent(Event:new(settingsList[v.key].event, settingsList[v.key].arg, { qm_show = true }))
+                    end
                 end
             end,
         }})
@@ -1256,15 +1439,36 @@ function Dispatcher._showAsMenu(settings, exec_props)
             table.insert(buttons, {})
         end
     end
+    local screen_size = Screen:getSize()
     local ButtonDialog = require("ui/widget/buttondialog")
     quickmenu = ButtonDialog:new{
         title = title,
         title_align = "center",
         shrink_unneeded_width = true,
-        shrink_min_width = math.floor(0.6 * Screen:getWidth()),
+        shrink_min_width = math.floor(0.6 * screen_size.w),
         use_info_style = false,
         buttons = buttons,
-        anchor = exec_props and exec_props.qm_anchor,
+        anchor = function()
+            if exec_props and exec_props.qm_anchor then
+                return exec_props.qm_anchor
+            end
+            local pos = settings.settings.quickmenu_position
+            if pos then
+                local padding = Size.padding.small -- do not stick to the screen edge
+                local x, y
+                if pos.x == 0 then
+                    x = padding
+                elseif pos.x == 1 then
+                    x = screen_size.w - quickmenu:getContentSize().w - padding
+                end
+                if pos.y == 0 then
+                    y = padding
+                elseif pos.y == 1 then
+                    y = screen_size.h - padding
+                end
+                return { x = x, y = y }
+            end
+        end,
     }
     UIManager:show(quickmenu)
 end
@@ -1327,6 +1531,10 @@ function Dispatcher:execute(settings, exec_props)
                 -- the event can accept a gesture object or a number
                 arg = v ~= 0 and v or gesture or 0
                 UIManager:sendEvent(Event:new(event, arg))
+            elseif category == "key" then
+                local key = Key:new(arg, {})
+                UIManager:sendEvent(Event:new("KeyPress", key))
+                UIManager:sendEvent(Event:new("KeyRelease", key))
             end
         end
     end
