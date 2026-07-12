@@ -92,35 +92,11 @@ local dictionaries = {
     },
     {
         name = "GNU/FDL Anglicko/Český slovník",
-        lang_in = "eng",
-        lang_out = "ces",
-        entries = 178904, -- ~90000 each way
-        license = _("GNU/FDL"),
-        url = "http://http.debian.net/debian/pool/non-free/s/stardict-english-czech/stardict-english-czech_20161201.orig.tar.gz",
-    },
-    {
-        name = "GNU/FDL Anglicko/Český slovník",
         lang_in = "ces",
         lang_out = "eng",
         entries = 88994,
         license = _("GNU/FDL"),
         url = "https://github.com/Vuizur/czech-dictionary-extender/releases/download/1.0.0/czech-english-dict.tar.gz",
-    },
-    {
-        name = "GNU/FDL Německo/Český slovník",
-        lang_in = "deu",
-        lang_out = "ces",
-        entries = 2341, -- ~1200 each way
-        license = _("GNU/FDL"),
-        url = "http://http.debian.net/debian/pool/non-free/s/stardict-german-czech/stardict-german-czech_20161201.orig.tar.gz",
-    },
-    {
-        name = "GNU/FDL Německo/Český slovník",
-        lang_in = "ces",
-        lang_out = "deu",
-        entries = 2341, -- ~1200 each way
-        license = _("GNU/FDL"),
-        url = "http://http.debian.net/debian/pool/non-free/s/stardict-german-czech/stardict-german-czech_20161201.orig.tar.gz",
     },
     -- Dictionaries mirrored from Sourceforge, see https://github.com/koreader/koreader/pull/3176#issuecomment-447085441
     {
@@ -2908,6 +2884,14 @@ local dictionaries = {
         url = "https://www.reader-dict.com/file/de/dict-de-de.zip"
     },
     {
+        name = "reader.dict Dutch",
+        lang_in = "nld",
+        lang_out = "nld",
+        entries = 579600,
+        license = "MIT https://github.com/reader-dict/monolingual",
+        url = "https://www.reader-dict.com/file/nl/dict-nl-nl.zip"
+    },
+    {
         name = "reader.dict Greek",
         lang_in = "ell",
         lang_out = "ell",
@@ -3337,7 +3321,7 @@ local dictionaries = {
         lang_out = "swe",
         entries = 14076,
         license = "GPLv3+ and CC BY-SA 4.0",
-        url = "https://github.com/xxyzz/wiktionary_stardict/releases/latest/download/nb-sv.tar.zst",
+        url = "https://github.com/xxyzz/wiktionary_stardict/releases/latest/download/no-sv.tar.zst",
     },
     {
         name = "Wiktionary Bulgarian-English",
