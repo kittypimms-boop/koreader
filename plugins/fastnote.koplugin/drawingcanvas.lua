@@ -29,6 +29,7 @@ ASSUMES: InputContainer, GestureRange, UIManager, Screen, Blitbuffer are
 local Blitbuffer        = require("ffi/blitbuffer")
 local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
 local Device            = require("device")
+local EventLog          = require("lib/eventlog")
 local GestureRange      = require("ui/gesturerange")
 local Geom              = require("ui/geometry")
 local InfoMessage       = require("ui/widget/infomessage")
@@ -84,10 +85,12 @@ local PALETTE = {
 
 -- Color self-test (Task C1): layout of the reference-bar rect painted into
 -- self._bb.  One bar per PALETTE color plus a black and a white reference
--- bar, stacked vertically, centered in the drawable area below the chrome
--- strip.  See _runColorSelfTest.
+-- bar, stacked vertically, at the TOP of the drawable area below the
+-- chrome strip (never centered -- see selftest_layout in canvas_utils.lua
+-- for why).  See _runColorSelfTest.
 local COLOR_SELFTEST_BAR_HEIGHT     = 40    -- px, per bar
 local COLOR_SELFTEST_WIDTH_FRACTION = 0.6   -- fraction of screen width
+local COLOR_SELFTEST_TOP_MARGIN     = 8     -- px, gap below chrome strip before first bar
 
 -- Hover-prevention: minimum digitizer pressure to accept a "down" event.
 -- The Elan chip can send BTN_TOUCH=1 a few mm above the screen; real contact
@@ -193,12 +196,23 @@ local DrawingCanvas = InputContainer:extend{
     -- ("stylus") -- see init() and _pollPen's PenDev.open call.
     eraser_button      = nil,
 
+    -- Config override for the debug raw+decoded input event logger
+    -- (lib/config.lua, ADR-006 2C); nil means "use the built-in default"
+    -- (false) -- see init() and _toggleInputLog.
+    debug_input_log    = nil,
+
     init_rotation_mode = nil,
     _rotation_mode     = nil,
 
     _pendev    = nil,              -- PenDev instance
     _touchdev  = nil,              -- TouchDev instance (Stage 3)
     _palmreject = nil,             -- PalmReject instance (Stage 3)
+
+    -- Debug input event logger (ADR-006 2C). _event_log is the lib/eventlog.lua
+    -- instance while logging is enabled (nil otherwise); _debug_input_log is
+    -- the resolved config override, set in init(). See _toggleInputLog.
+    _event_log        = nil,
+    _debug_input_log  = nil,
 
     -- Raw pen tracking (raw input path)
     _last_pen_x         = nil,
@@ -254,6 +268,15 @@ function DrawingCanvas:init()
     -- as eraser_button above: a non-empty string ("solid"/"color"), never
     -- false/nil once set, so `or` is safe here.
     self._live_ink_style = self.live_ink_style or "solid"
+
+    -- Resolve the debug_input_log config override (ADR-006 2C). Boolean --
+    -- `or` would silently turn an explicit `false` into the default (see
+    -- lua.instructions.md), same reasoning as tighten_enabled above.
+    if self.debug_input_log ~= nil then
+        self._debug_input_log = self.debug_input_log
+    else
+        self._debug_input_log = false
+    end
 
     -- Use BBRGB32 on colour e-ink panels so ink renders in the chosen colour.
     -- Screen:isColorEnabled() is a user toggle (reads G_reader_settings) and
@@ -425,10 +448,29 @@ function DrawingCanvas:init()
             end
         end
     end
+
+    -- Debug input log (ADR-006 2C): enable at open if configured on. Only
+    -- meaningful on the raw evdev path -- PenDev.raw_log_fn is only ever
+    -- consulted from PenDev:poll(), which runs when use_raw_input is true.
+    -- Checked here (after the raw-input setup block above) rather than
+    -- earlier so a failed PenDev.open (use_raw_input flipped back to false)
+    -- doesn't enable a logger that will never receive events.
+    if self._debug_input_log and self.use_raw_input then
+        self:_toggleInputLog()
+    end
 end
 
 function DrawingCanvas:onCloseWidget()
     logger.dbg("FastNote canvas: onCloseWidget, freeing resources")
+    -- ADR-006 2C cleanup contract: clear the module-level PenDev.raw_log_fn
+    -- hook before closing the EventLog, so a stale closure can never be
+    -- invoked with a closed file handle by a pen poll tick that races with
+    -- teardown.
+    if self._event_log then
+        PenDev.raw_log_fn = nil
+        self._event_log:close()
+        self._event_log = nil
+    end
     if self._pendev then
         self._pendev:close()
         self._pendev = nil
@@ -446,6 +488,60 @@ function DrawingCanvas:onCloseWidget()
         Device:toggleGSensor(true)
         logger.dbg("FastNote canvas: gyroscope auto-rotation restored")
     end
+end
+
+--- Toggle the raw input event logger (ADR-006 2C, "Input event logger:
+-- module-level singleton vs. per-instance"; adr-006-stage12-color-develop.md).
+--
+-- input/pendev.lua exposes PenDev.raw_log_fn as a module-level hook: when
+-- non-nil, PenDev:poll() calls it as raw_log_fn("RAW", type_name, code_name,
+-- value) for every raw input_event, before decoding. This method is the only
+-- place that assigns or clears it.
+--
+-- Log path: <datadir>/fastnote/input.log -- same base directory FastNote
+-- uses for notebook storage (see FastNote:onOpenFnoteCanvas in main.lua and
+-- model/library.lua), so it is always alongside notebooks/ and state.lua.
+-- Tail it live over SSH: tail -F <path>/fastnote/input.log.
+--
+-- Cleanup contract (ADR-006): when disabling, PenDev.raw_log_fn is cleared
+-- BEFORE the EventLog is closed. Reversing that order would leave a window
+-- where a pen poll tick already in flight calls the stale closure against a
+-- closed file handle. onCloseWidget enforces the same ordering in case the
+-- canvas closes while logging is still on.
+--
+-- Performance: every raw event (several per MT frame at ~120 Hz) becomes a
+-- synchronous line-buffered write while enabled, which can add visible
+-- stroke latency/jitter. Debug sessions only -- never leave it on for
+-- normal writing.
+function DrawingCanvas:_toggleInputLog()
+    if self._event_log then
+        -- Turning OFF.
+        PenDev.raw_log_fn = nil
+        self._event_log:close()
+        self._event_log = nil
+        logger.dbg("FastNote canvas: debug input log disabled")
+        return
+    end
+
+    -- Turning ON. EventLog.new() cannot throw -- io.open failure is
+    -- reported as a return value, not a Lua error -- so no pcall is needed
+    -- here; just check for nil and degrade gracefully (lua.instructions.md).
+    local DataStorage = require("datastorage")
+    local log_dir  = DataStorage:getDataDir() .. "/fastnote"
+    os.execute("mkdir -p " .. log_dir)
+    local log_path = log_dir .. "/input.log"
+
+    local log, err = EventLog.new(log_path)
+    if not log then
+        logger.warn("FastNote canvas: could not open debug input log:", err)
+        return
+    end
+
+    self._event_log = log
+    PenDev.raw_log_fn = function(level, type_name, code_name, value)
+        log:write(level, type_name, code_name, value)
+    end
+    logger.dbg("FastNote canvas: debug input log enabled at", log_path)
 end
 
 -- ---------------------------------------------------------------------------
@@ -525,6 +621,10 @@ function DrawingCanvas:onMenuTap()
     local live_color_lbl = self.live_color_refresh
                             and "Live color ink (experimental): on"
                             or  "Live color ink (experimental): off"
+    -- Live state, not the config override: _event_log is non-nil exactly
+    -- while logging is active (menu toggles must move the label even when
+    -- the conf key says otherwise).
+    local debug_log_lbl  = self._event_log and "Debug log: on" or "Debug log: off"
     local menu
 
     local function close() UIManager:close(menu) end
@@ -618,6 +718,18 @@ function DrawingCanvas:onMenuTap()
                      close()
                      self.live_color_refresh = not self.live_color_refresh
                      logger.dbg("FastNote canvas: live_color_refresh =", self.live_color_refresh)
+                 end},
+            },
+            -- Row 4c: debug input event log toggle (ADR-006 2C; see
+            -- _toggleInputLog). Live-togglable without restarting KOReader,
+            -- unlike live_color_refresh this one owns a real system
+            -- resource (an open file), so it is NOT session-only in effect --
+            -- _toggleInputLog opens/closes lib/eventlog.lua accordingly.
+            {
+                {text = debug_log_lbl,
+                 callback = function()
+                     close()
+                     self:_toggleInputLog()
                  end},
             },
             -- Row 5: ink color (top 3)
@@ -975,6 +1087,10 @@ end
 --   hw_dithering      -- Screen.hw_dithering: required for the GLRC16/GCC16 promotion
 --   hw_night_mode     -- Screen:getHWNightmode() (MTK only): HW inversion state
 --   screen_bb_type    -- Screen.bb:getType(): the *actual* framebuffer's BB type
+--   canvas_bb_type    -- self._bb:getType(): this canvas's own display-cache
+--                        BB type. Compare against screen_bb_type -- if they
+--                        disagree, the framebuffer gate is fine and the bug
+--                        is in this plugin's own buffer setup, not KOReader.
 --   bb8_trap          -- true when screen_bb_type == Blitbuffer.TYPE_BB8, the
 --                        definitive tell that KOReader booted the framebuffer
 --                        at 8bpp with CFA skipped (color_rendering was off at
@@ -993,6 +1109,7 @@ function DrawingCanvas:_colorGateSnapshot()
         hw_dithering     = Screen.hw_dithering and true or false,
         hw_night_mode    = hw_night_mode,
         screen_bb_type   = screen_bb_type,
+        canvas_bb_type   = self._bb and self._bb:getType(),
         bb8_trap         = (screen_bb_type == Blitbuffer.TYPE_BB8),
     }
 end
@@ -1001,23 +1118,36 @@ end
 function DrawingCanvas:_colorGateLogLine(gate)
     return string.format(
         "color gate: has_color_hw=%s is_color_enabled=%s has_kaleido_wfm=%s " ..
-        "hw_dithering=%s hw_night_mode=%s screen_bb_type=%s bb8_trap=%s",
+        "hw_dithering=%s hw_night_mode=%s screen_bb_type=%s canvas_bb_type=%s bb8_trap=%s",
         tostring(gate.has_color_hw), tostring(gate.is_color_enabled),
         tostring(gate.has_kaleido_wfm), tostring(gate.hw_dithering),
         tostring(gate.hw_night_mode), tostring(gate.screen_bb_type),
-        tostring(gate.bb8_trap))
+        tostring(gate.canvas_bb_type), tostring(gate.bb8_trap))
 end
 
 --- One-tap, on-device answer to "is the color pipeline intact at the
 -- KOReader level, independent of drawing code?" Paints a reference-bar
 -- pattern (one bar per PALETTE color, plus black and white reference bars)
+-- at the TOP of the drawable area (see canvas_utils.selftest_layout)
 -- straight into the display buffer and forces the highest-fidelity color
--- refresh ("full" + dither=true -> GCC16), then shows the gate values next
--- to it. StrokeBuffer is never touched; any pending tighten is cancelled
+-- refresh ("full" + dither=true -> GCC16), then shows the gate values, the
+-- current ink color, the resolved stroke color, and the bar rect's own
+-- coordinates next to it -- enough to answer "I can't find the bars"
+-- without more instrumentation.
+--
+-- The bars are placed at the top rather than centered specifically because
+-- the InfoMessage shown afterward is itself centered: an earlier version
+-- painted the bars centered in the drawable area, so the InfoMessage
+-- covered them completely and the self-test never actually showed
+-- anything.
+--
+-- StrokeBuffer is never touched -- the bars live only in the _bb display
+-- cache and can never be saved to a page. Any pending tighten is cancelled
 -- up front (a tighten firing mid-diagnostic would rebuild _bb and wipe the
--- reference bars while the user is reading them — its job is superseded by
--- the dismiss-time _repaintAll anyway). The page is restored via
--- _repaintAll() when the InfoMessage is dismissed.
+-- reference bars while the user is reading them). Dismissing the
+-- InfoMessage no longer repaints immediately -- see
+-- _confirmSelfTestDismiss -- so the bars stay on screen for inspection
+-- until the user explicitly asks to restore the page.
 function DrawingCanvas:_runColorSelfTest()
     if not self._bb then return end
     self:_cancelTighten()
@@ -1035,29 +1165,33 @@ function DrawingCanvas:_runColorSelfTest()
     bar_names[#bar_names + 1]   = "White (reference)"
     bar_colors[#bar_colors + 1] = Blitbuffer.COLOR_WHITE
 
-    local rect_w = math.floor(self.dimen.w * COLOR_SELFTEST_WIDTH_FRACTION)
-    local rect_h = #bar_colors * COLOR_SELFTEST_BAR_HEIGHT
-    local drawable_h = self.dimen.h - CHROME_HEIGHT
-    local rect_x = math.floor((self.dimen.w - rect_w) / 2)
-    local rect_y = CHROME_HEIGHT + math.floor((drawable_h - rect_h) / 2)
+    local test_rect = utils.selftest_layout(
+        self.dimen.w, self.dimen.h, CHROME_HEIGHT, #bar_colors,
+        COLOR_SELFTEST_BAR_HEIGHT, COLOR_SELFTEST_WIDTH_FRACTION,
+        COLOR_SELFTEST_TOP_MARGIN)
 
-    local bar_y = rect_y
+    local bar_y = test_rect.y
     for __, color in ipairs(bar_colors) do
-        self._bb:paintRect(rect_x, bar_y, rect_w, COLOR_SELFTEST_BAR_HEIGHT, color)
+        self._bb:paintRect(test_rect.x, bar_y, test_rect.w, COLOR_SELFTEST_BAR_HEIGHT, color)
         bar_y = bar_y + COLOR_SELFTEST_BAR_HEIGHT
     end
 
-    local test_rect = { x = rect_x, y = rect_y, w = rect_w, h = rect_h }
     -- "full" + dither=true -> GCC16, the highest-fidelity Kaleido color mode
     -- on an intact pipeline. A flash is expected and fine for a one-shot
     -- diagnostic (see eink-refresh.instructions.md -- one-shot "partial"/
     -- "full" + dither is correct; only per-segment "partial" is the hazard).
     UIManager:setDirty(self, function() return "full", Geom:new(test_rect), true end)
 
+    local stroke_color = self:_strokeColor()
     local msg_lines = {
         "Color self-test -- bars top to bottom: " .. table.concat(bar_names, ", "),
         "",
         self:_colorGateLogLine(gate),
+        "",
+        "Current ink color: " .. self._current_color ..
+        " -> resolved stroke color " .. tostring(stroke_color),
+        string.format("Bars painted at x=%d, y=%d, w=%d, h=%d",
+                       test_rect.x, test_rect.y, test_rect.w, test_rect.h),
         "",
         "Bars in color -> the color pipeline is intact; any remaining issue is plugin-side.",
         "Bars gray (or black/white only) -> a KOReader-level gate is broken " ..
@@ -1068,9 +1202,36 @@ function DrawingCanvas:_runColorSelfTest()
     UIManager:show(InfoMessage:new{
         text = table.concat(msg_lines, "\n"),
         dismiss_callback = function()
-            self:_repaintAll()
+            self:_confirmSelfTestDismiss()
         end,
     })
+end
+
+--- Follow-up dialog shown when the color self-test InfoMessage is
+-- dismissed. The self-test bars live only in self._bb (the display
+-- cache) -- StrokeBuffer is never touched, so they can never be saved;
+-- the only way to lose them is a later repaint (undo, page change,
+-- dark-mode toggle, or explicitly restoring here). Offering a choice
+-- instead of repainting unconditionally keeps the bars visible for
+-- inspection instead of wiping them the instant the InfoMessage closes,
+-- which is the bug this self-test rework fixes (see _runColorSelfTest).
+function DrawingCanvas:_confirmSelfTestDismiss()
+    local dialog
+    dialog = ButtonDialogTitle:new{
+        title = "Self-test bars are still on screen for inspection.",
+        buttons = {
+            {
+                {text = "Keep bars",
+                 callback = function() UIManager:close(dialog) end},
+                {text = "Restore page",
+                 callback = function()
+                     UIManager:close(dialog)
+                     self:_repaintAll()
+                 end},
+            },
+        },
+    }
+    UIManager:show(dialog)
 end
 
 --- Cancel the pending tighten timer but preserve the accumulated rect.
@@ -1282,6 +1443,20 @@ function DrawingCanvas:_pollPen()
     if not self._pendev then return end
 
     self._pendev:poll(function(ev)
+        -- Decoded-event ("DEC") log line, pairing with the "RAW" lines the
+        -- PenDev.raw_log_fn tap writes before decoding (ADR-006 2C; format
+        -- documented in lib/eventlog.lua). RAW shows what the hardware
+        -- sent; DEC shows what the state machine concluded -- comparing
+        -- the two is how eraser/tool mis-mapping is diagnosed (see
+        -- .agents/plans/eraser-capture-runbook.md).
+        if self._event_log then
+            self._event_log:write("DEC", ev.type,
+                "tool=" .. tostring(ev.tool),
+                string.format("x=%s y=%s p=%s",
+                              tostring(ev.x), tostring(ev.y),
+                              tostring(ev.pressure)))
+        end
+
         -- Feed pen event to palm rejection state machine (Stage 3)
         if self._palmreject then
             self._palmreject:onPenEvent(ev)
@@ -1527,8 +1702,10 @@ end
 
 --- Toggle between dark (black bg, white ink) and light (white bg, black ink) mode.
 -- Dark mode is a pure display transform: stroke data (#000000 canonical) is
--- never mutated.  _repaintAll passes _strokeColor() as a color_override to
--- paintTo, so all strokes flip visually without changing their stored color.
+-- never mutated.  _repaintAll calls _rebuildDisplayFromStrokes, which passes
+-- Blitbuffer.COLOR_WHITE as the color_override to StrokeBuffer:repaintTo in
+-- dark mode (nil in light mode, so each stroke's own stored color is used)
+-- -- all strokes flip visually without changing their stored color.
 function DrawingCanvas:_toggleDarkMode()
     self._dark_mode = not self._dark_mode
     self._page_dirty = true
