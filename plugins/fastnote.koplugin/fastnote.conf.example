@@ -92,22 +92,28 @@ return {
 
     -- live_color_refresh
     -- -------------------
-    -- EXPERIMENTAL. Replaces the per-segment "a2" (grayscale) live refresh
-    -- with a throttled direct Screen:refreshUI call over the accumulated
-    -- dirty rect (~30 fps cap), bypassing UIManager entirely. Shows (muted)
-    -- live ink colour while drawing instead of grayscale; the tighten pass
-    -- above still fires afterwards for full colour fidelity.
+    -- Replaces the per-segment "a2" (grayscale) live refresh with a
+    -- throttled direct Screen:refreshUI call over the accumulated dirty
+    -- rect (~30 fps cap), bypassing UIManager entirely. Shows live ink
+    -- colour while drawing instead of grayscale; the tighten pass above
+    -- still fires afterwards for full colour fidelity.
     --
     -- Only takes effect when colour hardware AND the raw evdev pen path are
     -- both in use — the gesture/emulator path and monochrome hardware are
     -- never affected by this flag, regardless of its value.
     --
+    -- This value is only the STARTING state when the canvas opens. During
+    -- the session it is auto-toggled: picking a non-black ink colour turns
+    -- it on, picking black or entering dark mode turns it off (see
+    -- canvas_utils.auto_live_color_refresh) — neither black-only ink nor
+    -- dark-mode ink (always shown solid white/black regardless of this
+    -- flag) benefits from it. It can also still be flipped manually from
+    -- the hamburger menu ("Live color ink (experimental)") as an explicit
+    -- override after the fact; that toggle, like the auto-behaviour, is
+    -- session-only and does not persist back to this file.
+    --
     --   false  (default) — unchanged behaviour: per-segment "a2" refresh.
-    --   true   — experimental; not yet validated on the on-device test
-    --              matrix (see the waveform-experimentation skill). Can
-    --              also be toggled live from the hamburger menu
-    --              ("Live color ink (experimental)") without editing this
-    --              file, but that toggle is session-only.
+    --   true   — shows live ink colour while drawing.
     --
     live_color_refresh = false,
 

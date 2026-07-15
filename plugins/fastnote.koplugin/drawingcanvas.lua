@@ -123,6 +123,9 @@ local DrawingCanvas = InputContainer:extend{
     -- Each returns (new_page_idx, total_pages, path) or nil at boundary.
     on_page_forward    = nil,
     on_page_back       = nil,
+    -- Jump to an arbitrary page number (the page-picker dialog). Same
+    -- return contract as on_page_forward/on_page_back.
+    on_page_jump       = nil,
 
     _bb           = nil,           -- BlitBuffer (display cache)
     _stroke_buf   = nil,           -- StrokeBuffer (source of truth, Stage 4)
@@ -134,6 +137,10 @@ local DrawingCanvas = InputContainer:extend{
     -- Chrome (Stage 7)
     page_index  = 1,               -- current page number (set by caller)
     page_count  = 1,               -- total pages in notebook (set by caller)
+
+    -- Was the page navigated away from, at the moment it was left, empty?
+    -- See _navigatePage and canvas_utils.should_block_forward_nav.
+    _prev_page_was_blank = nil,
 
     -- Eraser (Stage 10)
     _eraser_mode   = false,        -- true while eraser end of stylus is active (per-stroke)
@@ -384,6 +391,20 @@ function DrawingCanvas:init()
         },
     }
 
+    -- Page number: center portion of chrome strip, between the exit and
+    -- tools zones -- tap to open the page picker (onPageNumberTap).
+    self.ges_events.PageNumberTap = {
+        GestureRange:new{
+            ges   = "tap",
+            range = Geom:new{
+                x = CHROME_EXIT_W,
+                y = 0,
+                w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W,
+                h = CHROME_HEIGHT,
+            },
+        },
+    }
+
     -- Drawing gesture zones: always registered.
     -- On device (use_raw_input=true), onDrawStroke returns early unless
     -- finger_draw is enabled, keeping the emulator path always working.
@@ -392,20 +413,6 @@ function DrawingCanvas:init()
     }
     self.ges_events.DrawStrokeEnd = {
         GestureRange:new{ges="pan_release", range=self.dimen},
-    }
-
-    -- Double-tap anywhere below the chrome strip opens the quick-access overlay
-    -- (color picker + sensitivity).  Chrome tap zones take priority for the top strip.
-    self.ges_events.QuickDoubleTap = {
-        GestureRange:new{
-            ges   = "double_tap",
-            range = Geom:new{
-                x = 0,
-                y = CHROME_HEIGHT,
-                w = self.dimen.w,
-                h = self.dimen.h - CHROME_HEIGHT,
-            },
-        },
     }
 
     -- ── Stage 5: load existing page ───────────────────────────────────────
@@ -615,6 +622,25 @@ function DrawingCanvas:onExitTap(_, ges)
     end
 end
 
+--- Page picker: tap the "n / N" readout to jump to an arbitrary page.
+function DrawingCanvas:onPageNumberTap()
+    logger.dbg("FastNote canvas: page number tap")
+    local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
+    if not ok_sw then return true end
+    UIManager:show(SpinWidget:new{
+        title_text    = "Go to page",
+        value         = self.page_index,
+        value_min     = 1,
+        value_max     = self.page_count,
+        value_step    = 1,
+        default_value = self.page_index,
+        callback      = function(spin)
+            self:_navigateToPage(spin.value)
+        end,
+    })
+    return true
+end
+
 function DrawingCanvas:onMenuTap()
     logger.dbg("FastNote canvas: menu tap")
     local cur           = self._rotation_mode
@@ -642,9 +668,7 @@ function DrawingCanvas:onMenuTap()
             text = lbl,
             callback = function()
                 close()
-                self._current_color = entry.hex
-                if self.on_color_change then self.on_color_change(entry.hex) end
-                logger.dbg("FastNote canvas: ink color =", entry.hex)
+                self:_selectColor(entry.hex)
             end,
         }
     end
@@ -797,13 +821,14 @@ function DrawingCanvas:onMenuTap()
     return true
 end
 
-function DrawingCanvas:onQuickDoubleTap()
-    self:_showQuickMenu()
-    return true
-end
-
 --- Compact overlay: ink color palette + contact sensitivity.
--- Opens on double-tap anywhere on the drawing area.
+-- Opens on a pen side-button press (see the "side_button" branch in
+-- _pollPen) -- the pen only needs to be in EMR proximity range, not
+-- touching the screen, and the press is ignored while a stroke is in
+-- progress. Previously bound to a double-tap gesture; that trigger was
+-- removed (reliability issues reported on device) in favor of the side
+-- button being the sole trigger -- see
+-- .agents/plans/post-color-fix-followups.md, Ask 2.
 function DrawingCanvas:_showQuickMenu()
     -- Dismiss any previously-open quick menu (e.g. user double-tapped again
     -- without selecting, or tapped outside which leaves _quick_menu stale).
@@ -821,9 +846,7 @@ function DrawingCanvas:_showQuickMenu()
             callback = function()
                 UIManager:close(self._quick_menu)
                 self._quick_menu = nil
-                self._current_color = entry.hex
-                if self.on_color_change then self.on_color_change(entry.hex) end
-                logger.dbg("FastNote canvas: ink color =", entry.hex)
+                self:_selectColor(entry.hex)
             end,
         }
     end
@@ -887,8 +910,21 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local x = math.floor(ges.pos.x)
     local y = math.floor(ges.pos.y)
 
-    -- Ignore strokes in the chrome strip
-    if y < CHROME_HEIGHT then return end
+    -- Ignore strokes in the chrome strip. Close any open stroke first --
+    -- otherwise a later onDrawStrokeEnd (which does not check
+    -- CHROME_HEIGHT) draws a final segment from the stroke's last real
+    -- point to wherever the gesture ends inside the chrome strip (e.g. a
+    -- hamburger-menu tap), producing a spurious line across the page. See
+    -- .agents/plans/post-color-fix-followups.md, Bug 1.
+    if y < CHROME_HEIGHT then
+        if self._stroke_buf.current then
+            self._stroke_buf:penUp()
+            self._page_dirty = true
+        end
+        self._stroke_x, self._stroke_y = nil, nil
+        self._ges_start_x, self._ges_start_y = nil, nil
+        return
+    end
 
     -- Eraser mode via menu toggle
     if self._eraser_locked then
@@ -1017,14 +1053,23 @@ function DrawingCanvas:_digToScreen(rx, ry)
 end
 
 function DrawingCanvas:_updateGestureZones()
-    -- After rotation dimen.w changes; MenuTap x must track the right edge.
-    -- ExitTap is always at x=0 so it never needs updating.
+    -- After rotation dimen.w changes; MenuTap x must track the right edge,
+    -- and PageNumberTap's width must track the gap between the two side
+    -- zones. ExitTap is always at x=0 so it never needs updating.
     if not (self.ges_events.MenuTap and self.ges_events.MenuTap[1]) then return end
     local r = self.ges_events.MenuTap[1].range
     r.x = self.dimen.w - CHROME_TOOLS_W
     r.y = 0
     r.w = CHROME_TOOLS_W
     r.h = CHROME_HEIGHT
+
+    if self.ges_events.PageNumberTap and self.ges_events.PageNumberTap[1] then
+        local pr = self.ges_events.PageNumberTap[1].range
+        pr.x = CHROME_EXIT_W
+        pr.y = 0
+        pr.w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W
+        pr.h = CHROME_HEIGHT
+    end
 end
 
 --- Rebuild self._bb from StrokeBuffer's true stroke colors, without
@@ -1602,6 +1647,17 @@ function DrawingCanvas:_pollPen()
             end
             self._last_pen_x = nil
             self._last_pen_y = nil
+
+        elseif ev.type == "side_button" then
+            -- Suppress while a stroke is actively being drawn -- a press
+            -- resting on the button mid-stroke (e.g. normal grip) must not
+            -- interrupt drawing. _last_pen_x is nil exactly when no pen
+            -- stroke is in progress (see the "up" branch above, which
+            -- clears it). See .agents/plans/post-color-fix-followups.md,
+            -- Ask 2.
+            if not self._last_pen_x then
+                self:_showQuickMenu()
+            end
         end
     end)
 
@@ -1744,12 +1800,33 @@ end
 function DrawingCanvas:_toggleDarkMode()
     self._dark_mode = not self._dark_mode
     self._page_dirty = true
+    -- Ask 3: dark mode always shows ink solid white/black regardless of
+    -- live_color_refresh, so it's never needed there -- auto-disable it.
+    -- See canvas_utils.auto_live_color_refresh.
+    self.live_color_refresh = utils.auto_live_color_refresh(self._current_color, self._dark_mode)
     self:_repaintAll()
     UIManager:setDirty(self, "full")
     if self.on_dark_mode_change then
         self.on_dark_mode_change(self._dark_mode)
     end
-    logger.dbg("FastNote canvas: dark_mode =", self._dark_mode)
+    logger.dbg("FastNote canvas: dark_mode =", self._dark_mode,
+               "live_color_refresh =", self.live_color_refresh)
+end
+
+--- Apply an ink color selection: update _current_color, persist via
+-- on_color_change, and auto-toggle live_color_refresh (Ask 3 -- see
+-- canvas_utils.auto_live_color_refresh for the rule). Shared by both
+-- color pickers (hamburger menu + quick menu) so the auto-toggle logic
+-- can't drift between two copies. The hamburger menu's manual
+-- live_color_refresh toggle still works afterward as an explicit
+-- override -- this only decides the automatic response to a pick.
+-- @string hex  canonical #rrggbb ink color, e.g. from PALETTE
+function DrawingCanvas:_selectColor(hex)
+    self._current_color = hex
+    if self.on_color_change then self.on_color_change(hex) end
+    self.live_color_refresh = utils.auto_live_color_refresh(hex, self._dark_mode)
+    logger.dbg("FastNote canvas: ink color =", hex,
+               "live_color_refresh =", self.live_color_refresh)
 end
 
 --- Show a confirmation dialog before clearing the page.
@@ -1823,15 +1900,61 @@ function DrawingCanvas:onSuspend()
 end
 
 --- Navigate to a neighbouring page (+1 forward, -1 back).
+-- Forward navigation is blocked after two consecutive blank pages (see
+-- canvas_utils.should_block_forward_nav) -- a guard against accidentally
+-- creating an unbounded run of blank pages via button-mashing "next
+-- page". Backward navigation always clears the guard: reviewing older
+-- pages isn't the "accidentally went too far forward" scenario it exists
+-- to catch.
 function DrawingCanvas:_navigatePage(delta)
     local cb = delta > 0 and self.on_page_forward or self.on_page_back
     if not cb then return end
+
+    if delta > 0 then
+        local current_page_is_blank = #self._stroke_buf.strokes == 0
+        if utils.should_block_forward_nav(self._prev_page_was_blank, current_page_is_blank) then
+            UIManager:show(InfoMessage:new{
+                text = "Two blank pages in a row -- draw something here, " ..
+                       "or use the notebook browser to add more pages.",
+            })
+            return
+        end
+        self._prev_page_was_blank = current_page_is_blank
+    else
+        self._prev_page_was_blank = false
+    end
 
     self:_autoSave()
 
     local new_idx, new_count, new_path = cb()
     if not new_path then return end   -- at boundary (page 1 going back, etc.)
 
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Jump directly to an arbitrary page (the page-picker dialog,
+-- onPageNumberTap). A deliberate jump, not accidental over-advancing --
+-- always clears the blank-page-streak guard, same as backward
+-- navigation in _navigatePage.
+-- @int idx  target page number (1-indexed; the SpinWidget caller already
+--           clamps to [1, page_count])
+function DrawingCanvas:_navigateToPage(idx)
+    if not self.on_page_jump then return end
+    if idx == self.page_index then return end
+
+    self._prev_page_was_blank = false
+    self:_autoSave()
+
+    local new_idx, new_count, new_path = self.on_page_jump(idx)
+    if not new_path then return end
+
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Shared tail of page navigation: swap _stroke_buf/display for a newly
+-- resolved page and repaint. Shared by _navigatePage (+-1) and
+-- _navigateToPage (jump to an arbitrary index).
+function DrawingCanvas:_applyPageNavigation(new_idx, new_count, new_path)
     self.page_index = new_idx
     self.page_count = new_count
 
