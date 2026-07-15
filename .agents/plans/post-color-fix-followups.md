@@ -23,6 +23,16 @@ is a sensible one — quick wins and safety fixes first):
 
 ## Bug 1: finger-draw + hamburger tap draws a spurious line to the screen edge
 
+**Status: IMPLEMENTED (proposed fix only, per "keep it simple"), needs
+on-device confirmation.** `onDrawStrokeEnd` was deliberately left
+untouched — closing the stroke in `onDrawStroke`'s chrome-strip early
+return is sufficient on its own: `StrokeBuffer:penUp()` is a safe no-op
+with no open stroke, and `onDrawStrokeEnd`'s own `if self._stroke_x and
+self._stroke_y then ...` guard already skips drawing once those are
+nil'd, so a later `onDrawStrokeEnd` call for the same aborted gesture
+can't produce the spurious segment. Revisit `onDrawStrokeEnd` only if
+this turns out not to be sufficient on device.
+
 **Symptom (reported):** with `finger_draw` on, drawing then tapping the
 hamburger menu icon causes existing lines to appear to sprout "a line
 connecting the edges to a single point at the edge of the screen."

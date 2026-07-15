@@ -874,8 +874,21 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local x = math.floor(ges.pos.x)
     local y = math.floor(ges.pos.y)
 
-    -- Ignore strokes in the chrome strip
-    if y < CHROME_HEIGHT then return end
+    -- Ignore strokes in the chrome strip. Close any open stroke first --
+    -- otherwise a later onDrawStrokeEnd (which does not check
+    -- CHROME_HEIGHT) draws a final segment from the stroke's last real
+    -- point to wherever the gesture ends inside the chrome strip (e.g. a
+    -- hamburger-menu tap), producing a spurious line across the page. See
+    -- .agents/plans/post-color-fix-followups.md, Bug 1.
+    if y < CHROME_HEIGHT then
+        if self._stroke_buf.current then
+            self._stroke_buf:penUp()
+            self._page_dirty = true
+        end
+        self._stroke_x, self._stroke_y = nil, nil
+        self._ges_start_x, self._ges_start_y = nil, nil
+        return
+    end
 
     -- Eraser mode via menu toggle
     if self._eraser_locked then
