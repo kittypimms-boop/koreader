@@ -175,14 +175,103 @@ Bug 2's "two blank pages" `InfoMessage`. The proactive color-rendering-off
 user has typically started interacting) but cheap to cover too, for
 consistency.
 
-**Scope note:** this guard only applies to `_pollPen`/`_pollTouch` (the
-raw FFI paths) — the gesture handlers (`onDrawStroke`/`onMenuTap`/etc.)
-don't need it, since KOReader's own gesture detector already routes taps
-to the topmost widget correctly; that's *why* this bug is specific to the
-raw input paths and doesn't affect finger-draw-via-gesture at all. Not
-unit-testable (FFI + widget lifecycle glue) — validate on device:
-draw something, open the hamburger menu, pick a different color, confirm
-no spurious line appears; repeat via the quick menu and the page picker.
+**Scope note (superseded — see Round 4 below):** this guard only applies
+to `_pollPen`/`_pollTouch` (the raw FFI paths) — the gesture handlers
+(`onDrawStroke`/`onMenuTap`/etc.) don't need it, since KOReader's own
+gesture detector already routes taps to the topmost widget correctly;
+that's *why* this bug is specific to the raw input paths and doesn't
+affect finger-draw-via-gesture at all. Not unit-testable (FFI + widget
+lifecycle glue) — validate on device: draw something, open the hamburger
+menu, pick a different color, confirm no spurious line appears; repeat
+via the quick menu and the page picker.
+
+### Round 3 (2026-07): bug persisted, evidence narrowed to `live_color_refresh` toggling
+
+**Status: superseded by Round 4's fix below.** After Round 2's
+`_dialog_open` guard landed, the maintainer reported the vertex bug
+*still* happening, with more specific evidence: drawing black text, then
+switching to a color via the hamburger menu, corrupted the existing black
+text with a line to a shared "lower left origin" point. Switching between
+non-black colors afterward did not corrupt anything further; switching
+back to black seemed to do nothing at first, but repeated black↔color
+switching eventually corrupted all text on the page.
+
+Two things were confirmed by re-reading the code at this point (see
+`.agents/plans/vertex-line-bug-handoff.md` for the full writeup, since
+superseded by Round 4 immediately below):
+
+1. **A concrete, real, unaddressed gap:** `onDrawStroke`/`onDrawStrokeEnd`
+   never received the `_dialog_open` guard that Round 2 gave to
+   `_pollPen`/`_pollTouch` — the "Scope note" above assumed KOReader's
+   gesture detector gates the DrawStroke/DrawStrokeEnd zone by widget
+   stacking, but that zone is registered with `range = self.dimen` (the
+   whole canvas) and isn't actually gated that way.
+2. **A second, independent gap in `_pollPen`/`_pollTouch` themselves:**
+   Round 2's guard only clears `_last_pen_x`/`_last_pen_y` *reactively*,
+   inside the `down`/`move` branch, when a pen/touch event actually
+   arrives while `_dialog_open` is true. If the dialog is opened and
+   interacted with via a *different* input than whatever was mid-stroke
+   (the common case: pen was last down, then the user taps a menu button
+   with a finger), no further pen event arrives while the dialog is open
+   to trigger that reactive clear — `_last_pen_x`/`_last_pen_y` stay
+   stale into the next stroke. The very next real pen-down after the
+   dialog closes then draws `_drawSegment(stale_last_x, stale_last_y, sx,
+   sy, lw)` — a real line, painted directly into `_bb`, connecting the
+   *previous* stroke's last point to the *new* stroke's first point. This
+   is a genuine bug, structurally confirmed by code reading, independent
+   of whether it's the *whole* explanation for the "lower left origin"
+   wording (see Round 4).
+
+### Round 4 (2026-07): fixed both gaps above; open corner-glitch hypothesis instrumented, not fixed
+
+**Status: IMPLEMENTED, needs on-device confirmation.**
+
+**Fix 1 — `_dialogOpened()` now eagerly resets state instead of relying
+on a stray poll event.** `_dialogOpened()` (`drawingcanvas.lua`) now
+calls `self._stroke_buf:penUp()` (safe no-op if nothing in progress) and
+clears `_last_pen_x`/`_last_pen_y`, `_last_touch_x`/`_last_touch_y`, and
+the gesture-path's own `_stroke_x`/`_stroke_y`/`_ges_start_x`/
+`_ges_start_y`/`_stroke_min_x`/`_stroke_min_y`/`_stroke_max_x`/
+`_stroke_max_y` — synchronously, at the moment the dialog opens, not
+lazily on the next poll tick. Closes the "different input than what was
+mid-stroke" gap described in Round 3 point 2.
+
+**Fix 2 — `onDrawStroke`/`onDrawStrokeEnd` now check `_dialog_open`.**
+Same pattern as `_pollPen`/`_pollTouch`'s existing guard: both return
+immediately if a canvas-owned dialog is open. Closes Round 3 point 1.
+The "Scope note" above is now inaccurate (kept, marked superseded, per
+ADR conventions — not silently rewritten) — the gesture path needs this
+guard exactly as much as the raw FFI paths do.
+
+**Not fixed — a third, independent hypothesis, now instrumented instead
+of guessed at.** The "lower left origin" wording is a strong match for
+`_digToScreen`'s clamp-to-[0,1] behavior: under `rotation_mode = 3` (the
+config's recommended default for this device), a digitizer sample
+clamped to `(nx=0, ny=0)` — e.g. from a Wacom EMR proximity-in glitch
+reporting garbage/zero coordinates on first contact, a known class of EMR
+hardware quirk — resolves to screen point `(0, H-1)`, the bottom-left
+corner. This would produce a genuinely new short spurious stroke (not
+data corruption of the old stroke, consistent with `strokebuffer.lua`'s
+invariant that committed strokes are never mutated), independent of
+dialogs or `live_color_refresh` entirely — correlated with menu use only
+because that's when people most often lift the pen and set it back down,
+which is exactly when EMR proximity-in glitches are most likely. Rather
+than ship an unverified coordinate-rejection heuristic (real risk: it
+could silently reject legitimate strokes that start near the screen
+edge), the pen-down debug log line was extended with raw x/y, screen
+sx/sy, whether the raw coordinates sit at the digitizer's calibrated
+axis boundary, and whether `_last_pen_x` was stale at that moment — so if
+the bug recurs after Fixes 1 and 2 above, `debug_input_log` output will
+show directly which (if either) mechanism is firing, rather than
+requiring another round of guessing. See
+`.agents/plans/vertex-line-bug-handoff.md` for the full reasoning.
+
+`busted spec/`: unchanged at 271/0 (all Round 4 changes are widget/
+gesture/FFI glue, not unit-testable per this repo's TDD carve-out).
+**Needs on-device confirmation**: repeat the black→color→black switching
+sequence from the Round 3 report; if corruption still occurs, pull
+`debug_input_log`'s output around the corruption and check the new
+`raw_at_bound=`/`stale_last=` fields on the "FastNote pen down" line.
 
 ---
 

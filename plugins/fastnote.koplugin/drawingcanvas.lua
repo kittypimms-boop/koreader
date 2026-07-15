@@ -939,6 +939,13 @@ function DrawingCanvas:onDrawStroke(_, ges)
     -- On device, gesture path is only active when finger_draw is enabled.
     if self.use_raw_input and not self.finger_draw then return end
     if not self._bb then return end
+    -- A canvas-owned dialog is on top: this gesture is on the dialog's own
+    -- contents, not the canvas underneath. Unlike _pollPen/_pollTouch (raw
+    -- FFI, independent of widget focus), this gesture handler registers a
+    -- "pan" zone over the WHOLE canvas (range=self.dimen) and is not
+    -- otherwise gated by dialog stacking -- see _dialogOpened's doc comment
+    -- and .agents/plans/vertex-line-bug-handoff.md.
+    if self._dialog_open then return end
 
     local x = math.floor(ges.pos.x)
     local y = math.floor(ges.pos.y)
@@ -1010,6 +1017,9 @@ end
 function DrawingCanvas:onDrawStrokeEnd(_, ges)
     if self.use_raw_input and not self.finger_draw then return end
     if not self._bb then return end
+    -- See onDrawStroke's matching guard above -- same "pan_release" zone
+    -- covers the whole canvas regardless of dialog stacking.
+    if self._dialog_open then return end
 
     if ges and ges.pos then
         local x = math.floor(ges.pos.x)
@@ -1524,17 +1534,51 @@ function DrawingCanvas:_doEraseAt(x, y)
     end
 end
 
---- Mark a canvas-owned dialog as open, suspending _pollPen/_pollTouch
--- drawing until it's marked closed. Any screen touch on the dialog's own
--- contents is still read by those raw FFI poll loops -- unlike gesture
--- taps, they read the input device directly, independent of which
--- KOReader widget currently has UI focus -- so without this guard a tap
--- on, say, a color swatch inside the menu is also fed in as a draw point
--- on the canvas underneath. See .agents/plans/post-color-fix-followups.md,
--- "Bug 1 revisited", and the call sites of this method for which dialogs
--- need it and how each hooks its own close lifecycle.
+--- Mark a canvas-owned dialog as open, suspending _pollPen/_pollTouch/
+-- onDrawStroke drawing until it's marked closed. Any screen touch on the
+-- dialog's own contents is still read by those raw FFI poll loops --
+-- unlike gesture taps, they read the input device directly, independent
+-- of which KOReader widget currently has UI focus -- so without this
+-- guard a tap on, say, a color swatch inside the menu is also fed in as
+-- a draw point on the canvas underneath. See
+-- .agents/plans/post-color-fix-followups.md, "Bug 1 revisited", and the
+-- call sites of this method for which dialogs need it and how each hooks
+-- its own close lifecycle.
+--
+-- Also closes any stroke in progress and resets ALL per-gesture tracking
+-- state (pen, touch, and finger-draw gesture fields) immediately, rather
+-- than waiting for the next poll/gesture event to notice _dialog_open.
+-- If the dialog is opened and interacted with via a different input than
+-- whatever was mid-stroke (e.g. the pen was last down, then the user taps
+-- a menu button with a finger), no further pen event may ever arrive
+-- while the dialog is open to trigger the old lazy defensive-close inside
+-- _pollPen/_pollTouch -- leaving stale _last_pen_x/_last_pen_y (or
+-- _stroke_x/_stroke_y for the gesture path) to draw a phantom segment
+-- connecting the old stroke's last point to wherever the next stroke
+-- starts once the dialog closes. See
+-- .agents/plans/vertex-line-bug-handoff.md.
 function DrawingCanvas:_dialogOpened()
     self._dialog_open = true
+
+    if self._stroke_buf and self._stroke_buf.current then
+        self._stroke_buf:penUp()
+        self._page_dirty = true
+    end
+    self:_flushLiveRefresh()
+
+    self._last_pen_x   = nil
+    self._last_pen_y   = nil
+    self._last_touch_x = nil
+    self._last_touch_y = nil
+
+    self._stroke_x      = nil
+    self._stroke_y      = nil
+    self._ges_start_x   = nil
+    self._ges_start_y   = nil
+    self._stroke_min_x  = nil
+    self._stroke_min_y  = nil
+    self._stroke_max_x  = nil
+    self._stroke_max_y  = nil
 end
 
 --- Resume _pollPen/_pollTouch drawing after a dialog closes.
@@ -1671,10 +1715,22 @@ function DrawingCanvas:_pollPen()
                     self._last_pen_y = nil
                     return
                 end
+                -- raw_at_bound / stale_last flag two distinct hypotheses for
+                -- the "vertex line" bug (see
+                -- .agents/plans/vertex-line-bug-handoff.md): a digitizer
+                -- proximity glitch reporting the calibrated axis min/max
+                -- (clamped by _digToScreen to a fixed screen corner) versus
+                -- a stale _last_pen_x/_last_pen_y surviving from a previous
+                -- stroke. Log-only; not acted on until confirmed by evidence.
+                local raw_at_bound = ev.x <= self._pendev.x_min or ev.x >= self._pendev.x_max
+                                  or ev.y <= self._pendev.y_min or ev.y >= self._pendev.y_max
                 logger.dbg("FastNote pen down: tool=", ev.tool,
                            "eraser_mode=", self._eraser_mode,
                            "eraser_locked=", self._eraser_locked,
-                           "pressure=", raw_p)
+                           "pressure=", raw_p,
+                           "raw_x=", ev.x, "raw_y=", ev.y, "sx=", sx, "sy=", sy,
+                           "raw_at_bound=", raw_at_bound,
+                           "stale_last=", self._last_pen_x ~= nil)
                 -- New pen contact: cancel the tighten timer but keep the rect
                 -- so all strokes in this session share one color refresh.
                 if self._tighten_fn then self:_cancelTightenTimer() end
