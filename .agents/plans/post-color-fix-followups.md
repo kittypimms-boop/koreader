@@ -96,6 +96,94 @@ wrong (bug persists after this fix), the next step is capturing
 `debug_input_log`/gesture debug output for the exact tap to see which
 `ges_events` actually fire.
 
+### Revisited (2026-07): the fix above was real but only covered a narrower case
+
+**Status: root cause re-identified; fix below IMPLEMENTED, needs
+on-device confirmation.**
+
+On-device retest after the chrome-strip fix above landed: the maintainer
+still saw "existing drawn lines suddenly gain a new line leading to a
+single point," now "particularly when hamburger menu is opened" and
+"maybe related to color changes" — i.e. triggered by *interacting with
+the menu* (e.g. picking a color), not just the tap that opens it.
+
+**Confirmed first: `StrokeBuffer:repaintTo` cannot be the mechanism.**
+It iterates `self.strokes` and calls `s:paintTo(bb, override)` on each
+independently — no code path connects two separate strokes together
+during a repaint. So "existing lines gain a connecting line" has to mean
+one single stroke has a genuinely bad point appended to its own data,
+which then gets drawn (crossing visually through other strokes on the
+page, creating the appearance of multiple lines all connecting to one
+point) whenever that stroke is next repainted (e.g. by the dark-mode/
+color-pick repaint, or the menu's own screen refresh) — not a rendering
+bug, a **data** bug.
+
+**Root cause: `_pollPen` (and `_pollTouch`) never pause while a
+canvas-owned dialog is on top of the canvas.** Both read directly from
+the input device via FFI, independent of which KOReader widget currently
+has UI focus — unlike gesture-based taps (`onDrawStroke`/`onMenuTap`/
+etc.), which KOReader's own gesture detector correctly routes to the
+topmost widget. So tapping a button *inside* an open dialog (the
+hamburger menu, the quick menu, a color swatch, a SpinWidget) is a real
+physical screen touch that `_pollPen`'s scheduled poll loop still reads
+and feeds into `self._stroke_buf`/`self._bb` as if it were a draw point
+on the canvas underneath — exactly explaining "particularly when the
+menu is open" (any interaction with it involves touching the screen) and
+"maybe related to color changes" (picking a color is precisely such a
+touch). The earlier chrome-strip fix only closed the gap for the
+*opening* tap on the hamburger icon itself (a narrower, real, still-valid
+instance of the same category); it did nothing for touches on the
+dialog's own contents once it's already open.
+
+**Fix: a single `self._dialog_open` suspend flag, checked at the top of
+`_pollPen`/`_pollTouch`.** While true, raw pen/touch events are not
+processed as drawing/erasing input (any already-open stroke is
+defensively closed the same way the chrome-strip fix does, so resuming
+after the dialog closes starts fresh). Set true right before every
+canvas-owned dialog's `UIManager:show(...)`; set false reliably on close
+regardless of *how* it closes (a specific button, tap-outside, back key)
+by hooking each dialog's own universal close lifecycle rather than each
+button individually:
+
+- **`InfoMessage`** already fires `dismiss_callback` from its own
+  `onCloseWidget` on every close path — add the flag-clear call inside
+  the existing `dismiss_callback` (or add one where none existed).
+- **`SpinWidget`** already fires `close_callback` from its own
+  `onCloseWidget` the same way — add `close_callback = function() self:_dialogClosed() end`.
+- **`ButtonDialogTitle`/`ButtonDialog`** (same class, the latter is
+  re-exported as the former) has its **own** `onCloseWidget` that fires a
+  `"flashui"` refresh on close — there is no `close_callback`-style hook
+  to compose with. Directly overriding `onCloseWidget` in the instance's
+  constructor table would **shadow and lose that refresh**, a real (if
+  minor) visual regression. Fix: override it but call the base
+  implementation from inside:
+  ```lua
+  onCloseWidget = function(dialog_self)
+      self:_dialogClosed()
+      ButtonDialogTitle.onCloseWidget(dialog_self)
+  end,
+  ```
+
+Dialog call sites needing the flag (`grep -n "UIManager:show(" drawingcanvas.lua`):
+`onMenuTap`'s `menu`; the hamburger menu's own "Contact Sensitivity"
+`SpinWidget`; `_showQuickMenu`'s `self._quick_menu` and its own
+"Contact Sensitivity" `SpinWidget`; `onPageNumberTap`'s "Go to page"
+`SpinWidget`; `_runColorSelfTest`'s `InfoMessage`;
+`_confirmSelfTestDismiss`'s `dialog`; `_confirmClearPage`'s `confirm`;
+Bug 2's "two blank pages" `InfoMessage`. The proactive color-rendering-off
+`InfoMessage` shown once at `init()` is lower priority (fires before the
+user has typically started interacting) but cheap to cover too, for
+consistency.
+
+**Scope note:** this guard only applies to `_pollPen`/`_pollTouch` (the
+raw FFI paths) — the gesture handlers (`onDrawStroke`/`onMenuTap`/etc.)
+don't need it, since KOReader's own gesture detector already routes taps
+to the topmost widget correctly; that's *why* this bug is specific to the
+raw input paths and doesn't affect finger-draw-via-gesture at all. Not
+unit-testable (FFI + widget lifecycle glue) — validate on device:
+draw something, open the hamburger menu, pick a different color, confirm
+no spurious line appears; repeat via the quick menu and the page picker.
+
 ---
 
 ## Bug 2: stop auto-advancing after 2 consecutive empty pages

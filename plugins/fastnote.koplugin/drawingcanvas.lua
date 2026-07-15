@@ -134,6 +134,13 @@ local DrawingCanvas = InputContainer:extend{
     _page_path  = nil,             -- path of the current page SVG (Stage 5)
     _page_dirty = false,           -- true when strokes added since last save
 
+    -- True while a canvas-owned dialog (hamburger menu, quick menu,
+    -- self-test, a SpinWidget, etc.) is on top of the canvas. _pollPen/
+    -- _pollTouch check this and suppress draw/erase while it's set --
+    -- see _dialogOpened/_dialogClosed and
+    -- .agents/plans/post-color-fix-followups.md, "Bug 1 revisited".
+    _dialog_open = nil,
+
     -- Chrome (Stage 7)
     page_index  = 1,               -- current page number (set by caller)
     page_count  = 1,               -- total pages in notebook (set by caller)
@@ -321,11 +328,13 @@ function DrawingCanvas:init()
     -- exactly once per DrawingCanvas instance/open (_reinitAtRotation
     -- reuses this instance for rotation and never calls init() again).
     if gate.has_color_hw and not gate.is_color_enabled then
+        self:_dialogOpened()
         UIManager:show(InfoMessage:new{
             text = "Fast Note: color rendering is turned off in KOReader, " ..
                    "so ink will draw in grayscale no matter what color you " ..
                    "pick. To fix: top menu -> gear icon -> Screen -> Color " ..
                    "rendering, then restart KOReader.",
+            dismiss_callback = function() self:_dialogClosed() end,
         })
     end
 
@@ -627,6 +636,7 @@ function DrawingCanvas:onPageNumberTap()
     logger.dbg("FastNote canvas: page number tap")
     local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
     if not ok_sw then return true end
+    self:_dialogOpened()
     UIManager:show(SpinWidget:new{
         title_text    = "Go to page",
         value         = self.page_index,
@@ -637,6 +647,7 @@ function DrawingCanvas:onPageNumberTap()
         callback      = function(spin)
             self:_navigateToPage(spin.value)
         end,
+        close_callback = function() self:_dialogClosed() end,
     })
     return true
 end
@@ -773,6 +784,7 @@ function DrawingCanvas:onMenuTap()
                         close()
                         local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
                         if not ok_sw then return end
+                        self:_dialogOpened()
                         UIManager:show(SpinWidget:new{
                             title_text   = "Contact Sensitivity",
                             value        = self._pressure_floor,
@@ -787,6 +799,7 @@ function DrawingCanvas:onMenuTap()
                                 end
                                 logger.dbg("FastNote canvas: pressure_floor =", spin.value)
                             end,
+                            close_callback = function() self:_dialogClosed() end,
                         })
                     end,
                 },
@@ -816,7 +829,18 @@ function DrawingCanvas:onMenuTap()
                  end},
             },
         },
+        -- Suspend _pollPen/_pollTouch drawing while this dialog is open
+        -- (see _dialogOpened's doc comment) -- fires on every close path
+        -- (any button, tap-outside), not just the explicit close()
+        -- callbacks above. ButtonDialog's own onCloseWidget fires a
+        -- "flashui" refresh; call it explicitly so overriding here
+        -- doesn't lose that.
+        onCloseWidget = function(dialog_self)
+            self:_dialogClosed()
+            ButtonDialogTitle.onCloseWidget(dialog_self)
+        end,
     }
+    self:_dialogOpened()
     UIManager:show(menu)
     return true
 end
@@ -867,6 +891,7 @@ function DrawingCanvas:_showQuickMenu()
                         self._quick_menu = nil
                         local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
                         if not ok_sw then return end
+                        self:_dialogOpened()
                         UIManager:show(SpinWidget:new{
                             title_text   = "Contact Sensitivity",
                             value        = self._pressure_floor,
@@ -881,12 +906,20 @@ function DrawingCanvas:_showQuickMenu()
                                 end
                                 logger.dbg("FastNote canvas: pressure_floor =", spin.value)
                             end,
+                            close_callback = function() self:_dialogClosed() end,
                         })
                     end,
                 },
             },
         },
+        -- See the equivalent onCloseWidget wrapper on the hamburger
+        -- menu (onMenuTap) for why this can't just be close_callback.
+        onCloseWidget = function(dialog_self)
+            self:_dialogClosed()
+            ButtonDialogTitle.onCloseWidget(dialog_self)
+        end,
     }
+    self:_dialogOpened()
     UIManager:show(self._quick_menu)
 end
 
@@ -1278,10 +1311,12 @@ function DrawingCanvas:_runColorSelfTest()
         "-- no plugin change can help until that setting is fixed.",
     }
 
+    self:_dialogOpened()
     UIManager:show(InfoMessage:new{
         text = table.concat(msg_lines, "\n"),
         height = msg_max_height,
         dismiss_callback = function()
+            self:_dialogClosed()
             self:_confirmSelfTestDismiss()
         end,
     })
@@ -1310,7 +1345,14 @@ function DrawingCanvas:_confirmSelfTestDismiss()
                  end},
             },
         },
+        -- See the onCloseWidget wrapper on the hamburger menu (onMenuTap)
+        -- for why this can't just be close_callback.
+        onCloseWidget = function(dialog_self)
+            self:_dialogClosed()
+            ButtonDialogTitle.onCloseWidget(dialog_self)
+        end,
     }
+    self:_dialogOpened()
     UIManager:show(dialog)
 end
 
@@ -1482,6 +1524,24 @@ function DrawingCanvas:_doEraseAt(x, y)
     end
 end
 
+--- Mark a canvas-owned dialog as open, suspending _pollPen/_pollTouch
+-- drawing until it's marked closed. Any screen touch on the dialog's own
+-- contents is still read by those raw FFI poll loops -- unlike gesture
+-- taps, they read the input device directly, independent of which
+-- KOReader widget currently has UI focus -- so without this guard a tap
+-- on, say, a color swatch inside the menu is also fed in as a draw point
+-- on the canvas underneath. See .agents/plans/post-color-fix-followups.md,
+-- "Bug 1 revisited", and the call sites of this method for which dialogs
+-- need it and how each hooks its own close lifecycle.
+function DrawingCanvas:_dialogOpened()
+    self._dialog_open = true
+end
+
+--- Resume _pollPen/_pollTouch drawing after a dialog closes.
+function DrawingCanvas:_dialogClosed()
+    self._dialog_open = false
+end
+
 --- Apply a rotation change from the canvas menu.
 -- After Stage 4: strokes are preserved via repaintTo.
 function DrawingCanvas:_reinitAtRotation(new_mode)
@@ -1543,6 +1603,21 @@ function DrawingCanvas:_pollPen()
         end
 
         if ev.type == "down" or ev.type == "move" then
+            -- A canvas-owned dialog is on top: this touch is on the
+            -- dialog's own contents, not the canvas underneath -- see
+            -- _dialogOpened's doc comment. Defensively close any stroke
+            -- that was still open the moment the dialog appeared, so
+            -- resuming after it closes starts fresh instead of
+            -- continuing a stale stroke.
+            if self._dialog_open then
+                if self._last_pen_x then
+                    self._stroke_buf:penUp()
+                    self._last_pen_x = nil
+                    self._last_pen_y = nil
+                end
+                return
+            end
+
             local sx, sy = self:_digToScreen(ev.x, ev.y)
 
             -- Chrome strip: abort any open stroke and ignore the event
@@ -1678,6 +1753,18 @@ function DrawingCanvas:_pollTouch()
             or  slot_ev
 
         if filtered and self.finger_draw then
+            -- A canvas-owned dialog is on top: this touch is on the
+            -- dialog's own contents, not the canvas underneath -- see
+            -- _dialogOpened's doc comment.
+            if self._dialog_open then
+                if self._last_touch_x then
+                    self._stroke_buf:penUp()
+                    self._last_touch_x = nil
+                    self._last_touch_y = nil
+                end
+                return
+            end
+
             local fx, fy = filtered.x, filtered.y
 
             -- Eraser mode via menu toggle
@@ -1845,7 +1932,14 @@ function DrawingCanvas:_confirmClearPage()
                  end},
             },
         },
+        -- See the onCloseWidget wrapper on the hamburger menu (onMenuTap)
+        -- for why this can't just be close_callback.
+        onCloseWidget = function(dialog_self)
+            self:_dialogClosed()
+            ButtonDialogTitle.onCloseWidget(dialog_self)
+        end,
     }
+    self:_dialogOpened()
     UIManager:show(confirm)
 end
 
@@ -1913,9 +2007,11 @@ function DrawingCanvas:_navigatePage(delta)
     if delta > 0 then
         local current_page_is_blank = #self._stroke_buf.strokes == 0
         if utils.should_block_forward_nav(self._prev_page_was_blank, current_page_is_blank) then
+            self:_dialogOpened()
             UIManager:show(InfoMessage:new{
                 text = "Two blank pages in a row -- draw something here, " ..
                        "or use the notebook browser to add more pages.",
+                dismiss_callback = function() self:_dialogClosed() end,
             })
             return
         end
