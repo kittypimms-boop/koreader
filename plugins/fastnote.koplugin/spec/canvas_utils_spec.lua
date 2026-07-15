@@ -227,6 +227,31 @@ describe("canvas_utils", function()
         end)
     end)
 
+    describe("should_block_forward_nav", function()
+        -- Guard against button-mashing "next page" creating an unbounded
+        -- run of blank pages: block once two CONSECUTIVE pages are empty.
+        -- Both inputs are evaluated live at each navigation attempt (not a
+        -- persisted running counter), so drawing something on the current
+        -- page immediately un-blocks forward navigation on the next press
+        -- -- see .agents/plans/post-color-fix-followups.md, Bug 2.
+
+        it("blocks when both the previous and current page are blank", function()
+            assert.is_true(utils.should_block_forward_nav(true, true))
+        end)
+
+        it("does not block when the previous page had content", function()
+            assert.is_false(utils.should_block_forward_nav(false, true))
+        end)
+
+        it("does not block when the current page has content", function()
+            assert.is_false(utils.should_block_forward_nav(true, false))
+        end)
+
+        it("does not block when neither page is blank", function()
+            assert.is_false(utils.should_block_forward_nav(false, false))
+        end)
+    end)
+
     describe("live_ink_mode", function()
         -- Task C2 ("draw black, bloom color"): pure decision of whether a
         -- live-drawn segment should paint into _bb as solid ink or the

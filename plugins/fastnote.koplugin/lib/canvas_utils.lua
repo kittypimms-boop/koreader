@@ -190,4 +190,24 @@ function canvas_utils.selftest_layout(screen_w, screen_h, chrome_h, bar_count,
     return { x = x, y = y, w = w, h = h }
 end
 
+--- Decide whether forward page navigation should be blocked because the
+-- previous page and the current page (the two most recent pages, right
+-- now) are both empty -- a guard against accidentally creating an
+-- unbounded run of blank pages by mashing the "next page" button.
+--
+-- Both arguments are meant to be evaluated fresh at each navigation
+-- attempt, not read from a persisted running counter: `current_page_is_
+-- blank` should reflect the CURRENT page's live stroke count at the
+-- moment of the attempt, so drawing something on the page that triggered
+-- the block immediately un-blocks the next forward-navigation attempt --
+-- see .agents/plans/post-color-fix-followups.md, Bug 2.
+--
+-- @param prev_page_was_blank   boolean  was the page navigated away from,
+--                              at the moment it was left, empty?
+-- @param current_page_is_blank boolean  is the current page empty right now?
+-- @return boolean
+function canvas_utils.should_block_forward_nav(prev_page_was_blank, current_page_is_blank)
+    return prev_page_was_blank and current_page_is_blank
+end
+
 return canvas_utils

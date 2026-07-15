@@ -100,45 +100,46 @@ wrong (bug persists after this fix), the next step is capturing
 
 ## Bug 2: stop auto-advancing after 2 consecutive empty pages
 
+**Status: IMPLEMENTED, needs on-device confirmation.**
+
 **Ask:** pressing "next page" repeatedly (e.g. accidental physical button
 mashing) currently creates blank page after blank page with no limit.
 Want it to stop after 2 empty pages in a row, "without adding a ton of
 complexity."
 
-**Investigation:** `DrawingCanvas:_navigatePage(delta)` (~1826) calls
-`main.lua`'s `on_page_forward` callback (~104), which unconditionally
-does `nb:addPage()` whenever `page_idx > nb:pageCount()` — no concept of
-"is this page empty" exists anywhere today. `Notebook` (`model/notebook.lua`)
-tracks no per-page stroke count. `DrawingCanvas:loadPage(path)` (~1675)
-does populate `self._stroke_buf` from the SVG (or leaves it fresh/empty
-if the file doesn't exist yet), so `#self._stroke_buf.strokes == 0` is a
-free, already-available "is this page empty" check right after navigating
-— no new file I/O needed.
+**What shipped (design refined from the original proposal below during
+implementation):** a running numeric streak counter turned out to have a
+real staleness bug — if the user draws something on the page that
+triggered the block, a counter last updated at navigation time wouldn't
+know that, and would keep blocking even though the current page is no
+longer blank. Switched to two booleans instead, both evaluated live at
+each navigation attempt:
 
-**Proposed design (small, self-contained):**
-- New pure function in `lib/canvas_utils.lua`, spec-first:
-  `canvas_utils.should_block_forward_nav(blank_streak, max_blank_streak)`
-  → boolean, or simpler, inline the threshold check directly in
-  `_navigatePage` if a whole function feels like overkill for a
-  two-line comparison — judgment call, lean toward the pure function
-  for testability per the TDD skill, but keep it trivial.
-- `DrawingCanvas` gains `self._blank_streak = 0` (instance state).
-  In `_navigatePage(1)` (forward only): after `loadPage`, if
-  `#self._stroke_buf.strokes == 0` increment `self._blank_streak`, else
-  reset it to 0. Navigating backward always resets it to 0 (going back
-  to re-examine pages shouldn't count against the forward streak).
-- Before calling the forward callback: if `self._blank_streak >= 2`,
-  don't advance — show a brief `InfoMessage` ("Already 2 blank pages —
-  draw something or use the notebook browser to add more.") and return,
-  instead of calling `cb()`/`addPage()` again.
-- Deliberately no new config flag for the threshold — hardcode `2` as a
-  named constant (`MAX_BLANK_PAGE_STREAK`), matching "without a ton of
-  complexity." Revisit only if this turns out to be annoying in practice.
-- No override gesture planned (e.g. "hold to force") — if the user
-  genuinely wants a 3rd blank page, the notebook browser's existing
-  "create new page" affordance (if one exists) or drawing something
-  first (resetting the streak) covers it. Flag this trade-off for the
-  maintainer to confirm is acceptable before building.
+- New pure function in `lib/canvas_utils.lua`, spec-first (4 cases):
+  `canvas_utils.should_block_forward_nav(prev_page_was_blank,
+  current_page_is_blank)` → `prev_page_was_blank and current_page_is_blank`.
+- `DrawingCanvas` gains `self._prev_page_was_blank` (instance state,
+  nil/false initially).
+- `_navigatePage(delta)`, forward case: compute `current_page_is_blank =
+  #self._stroke_buf.strokes == 0` fresh (reflects any drawing done since
+  arriving); if `should_block_forward_nav(self._prev_page_was_blank,
+  current_page_is_blank)`, show an `InfoMessage` and return without
+  calling `on_page_forward`/creating a page. Otherwise set
+  `self._prev_page_was_blank = current_page_is_blank` (capturing the
+  outgoing page's state at the moment of leaving) and proceed.
+- Backward navigation always sets `self._prev_page_was_blank = false` —
+  reviewing older pages isn't the "accidentally went too far forward"
+  scenario this guards against.
+- No new config flag for the threshold — hardcoded as the boolean-AND of
+  two consecutive pages, matching "without a ton of complexity."
+- No override gesture — if the user wants a 3rd blank page, drawing
+  something (even a small mark) on the current blank page immediately
+  un-blocks the next forward press, or the notebook browser can add pages
+  directly.
+- `busted spec/`: 267/0 (4 new cases). Needs on-device confirmation: two
+  blank-page forward presses show the message and don't create a 3rd
+  page; drawing on the blocking page then pressing forward again works
+  normally; backward navigation is never blocked.
 
 ---
 

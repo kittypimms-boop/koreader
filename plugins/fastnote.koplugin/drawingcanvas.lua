@@ -135,6 +135,10 @@ local DrawingCanvas = InputContainer:extend{
     page_index  = 1,               -- current page number (set by caller)
     page_count  = 1,               -- total pages in notebook (set by caller)
 
+    -- Was the page navigated away from, at the moment it was left, empty?
+    -- See _navigatePage and canvas_utils.should_block_forward_nav.
+    _prev_page_was_blank = nil,
+
     -- Eraser (Stage 10)
     _eraser_mode   = false,        -- true while eraser end of stylus is active (per-stroke)
     _eraser_locked = false,        -- true when menu eraser toggle is ON (persistent)
@@ -1834,9 +1838,29 @@ function DrawingCanvas:onSuspend()
 end
 
 --- Navigate to a neighbouring page (+1 forward, -1 back).
+-- Forward navigation is blocked after two consecutive blank pages (see
+-- canvas_utils.should_block_forward_nav) -- a guard against accidentally
+-- creating an unbounded run of blank pages via button-mashing "next
+-- page". Backward navigation always clears the guard: reviewing older
+-- pages isn't the "accidentally went too far forward" scenario it exists
+-- to catch.
 function DrawingCanvas:_navigatePage(delta)
     local cb = delta > 0 and self.on_page_forward or self.on_page_back
     if not cb then return end
+
+    if delta > 0 then
+        local current_page_is_blank = #self._stroke_buf.strokes == 0
+        if utils.should_block_forward_nav(self._prev_page_was_blank, current_page_is_blank) then
+            UIManager:show(InfoMessage:new{
+                text = "Two blank pages in a row -- draw something here, " ..
+                       "or use the notebook browser to add more pages.",
+            })
+            return
+        end
+        self._prev_page_was_blank = current_page_is_blank
+    else
+        self._prev_page_was_blank = false
+    end
 
     self:_autoSave()
 
