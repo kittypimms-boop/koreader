@@ -463,3 +463,81 @@ hardware/firmware limitation. Findings, with file:line references from
 
 Full step-by-step capture procedure for the maintainer:
 `.agents/plans/color-wfm-capture-runbook.md`.
+
+**Result (2026-07): `WFM: 10` (`HWTCON_WAVEFORM_MODE_GCC16`) captured.**
+Real Kaleido color update genuinely requested, at refresh time (not just
+gate-snapshot time) — the refresh/waveform-promotion chain documented
+above really is correct in practice, not just by static reading.
+
+**But this did NOT mean the color gap was a hardware/firmware limitation
+— that conclusion (briefly recorded here and then retracted) was wrong,**
+falsified by the maintainer confirming color renders correctly elsewhere
+on the same device (KOReader's own features, other plugins) using the
+same shared kernel driver and framebuffer object. A correctly-requested
+waveform mode only proves the *refresh* layer is sound; it says nothing
+about whether the *pixel data* handed to that refresh is actually in
+color. See the "paintRect vs. paintRectRGB32" section below for the real
+root cause, found immediately after by reading `base/ffi/blitbuffer.lua`
+directly instead of stopping at the refresh layer.
+
+---
+
+## paintRect vs. paintRectRGB32 — the actual root cause (2026-07)
+
+`BlitBuffer:paintRect(x, y, w, h, value, setter)` (`base/ffi/blitbuffer.lua`
+~line 1704) is documented to take "a luminance value", and its
+implementation matches that: it unconditionally calls
+`value:getColor8()` before writing any pixels (~line 1711 for the CBB
+fast path, ~line 1722 for the fallback path) — **even when the
+destination buffer is genuine `TYPE_BBRGB32`**. A `ColorRGB32` value
+passed to it gets downconverted to luminance, then (on an RGB32 buffer)
+converted back up via `:getColorRGB32()`, producing a pixel with
+R=G=B — i.e. gray, triplicated across channels. Different input hues
+produce different luminance values, which is exactly why this plugin's
+color self-test showed *distinguishable* grayscale shades per color
+rather than one flat gray: real RGB was being discarded at the paint
+call, silently, on every single stroke and every self-test bar,
+regardless of buffer type, gate state, or refresh waveform mode.
+
+`BlitBuffer:paintRectRGB32(x, y, w, h, color, setter)` (~line 1827) is the
+type-aware sibling: on `TYPE_BBRGB32`/`TYPE_BBRGB16` buffers it preserves
+full color; on `TYPE_BB8A`/`TYPE_BB8` buffers it correctly degrades to
+grayscale (`Color8` implements `:getColorRGB32()` too, so it round-trips
+safely). It is a safe, unconditional replacement for `paintRect` any time
+the color argument might carry real hue, regardless of what hardware the
+buffer was created for.
+
+fastnote's `lib/canvas_utils.lua` `drawLine` (used by every live stroke
+segment and every StrokeBuffer repaint, including the tighten pass) and
+`drawingcanvas.lua`'s `_runColorSelfTest` bar-painting loop both called
+the generic `paintRect` — fixed to call `paintRectRGB32` instead. This
+was the actual, sole, plugin-side root cause of ink never rendering in
+color, on any refresh path, across every round of this investigation.
+Every other finding in this file (waveform map, dither promotion, gate
+chain, A2 1-bit behavior, the DU/32bpp driver bug) remains accurate and
+was never the cause of this specific symptom — they're all real
+constraints on refresh *behavior*, not on what color gets painted.
+
+**Gotcha found capturing this on device (2026-07): enabling debug logging
+requires a KOReader restart before `fb.debug` output appears.**
+`frontend/logger.lua`'s `Logger:setLevel` REASSIGNS the `logger.dbg` field
+to either the real logging function or a no-op (defaults to no-op at
+boot). The Kobo screen object captures `debug = logger.dbg` exactly once,
+at boot (`frontend/device/kobo/device.lua`,
+`self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug
+= logger.dbg, ...}`) — a snapshot of whatever `logger.dbg` was at that
+moment, not a live reference. Toggling "Enable debug logging" from the
+in-session menu reassigns the *global* `logger.dbg` going forward, but
+`fb.debug`'s already-captured copy keeps pointing at the stale no-op for
+the rest of that session — so `mxc_update`'s debug line (and any other
+`fb.debug` call in `base/`) can never fire until KOReader restarts with
+the setting already persisted (`reader.lua` line 73:
+`if G_reader_settings:isTrue("debug") then dbg:turnOn() end`, which runs
+before the screen object is constructed). Confirmed on device: a full
+crash.log capture with both debug toggles on, self-test run, and dialog
+dismissed showed every frontend-level debug line (`_refresh: Enqueued
+...`, `triggering refresh {...}`, this plugin's own breadcrumbs) but zero
+`mxc_update:` lines anywhere in the log — consistent with this exact
+mechanism, not a hardware/absence-of-output problem. This does not affect
+frontend-level `logger.dbg(...)` calls made directly (they always do a
+fresh lookup) — only captured-reference cases like `fb.debug`.

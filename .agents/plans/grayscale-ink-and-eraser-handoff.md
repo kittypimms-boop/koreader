@@ -1,6 +1,66 @@
 # Handoff: plugin-side grayscale ink + eraser-still-draws investigation
 
-**Status update (2026-07, latest round):** on device, the self-test bars
+**RETRACTED then FIXED (2026-07).** An earlier version of this status
+concluded "downstream of KOReader, not a software bug" on the strength of
+a captured `WFM: 10` (`HWTCON_WAVEFORM_MODE_GCC16`) log line, reasoning
+that a genuinely-requested color waveform mode proved the whole chain
+correct. **That conclusion was wrong**, and was falsified within the same
+conversation turn: the maintainer reported color renders correctly in
+KOReader's own features and in other plugins (pencil.koplugin) on this
+exact device. Since the kernel driver and EPDC firmware are shared,
+process-wide singletons, a driver/firmware/panel fault could not
+selectively fail for one caller while working for others in the same
+running KOReader process — the `WFM: 10` finding was real (the promotion
+logic genuinely is correct) but didn't rule out a bug further upstream,
+in how the pixel data itself gets painted before that refresh ever fires.
+
+**Root cause, found by reading `base/ffi/blitbuffer.lua` directly:**
+`BlitBuffer:paintRect(x, y, w, h, value, setter)` — the function this
+plugin's `canvas_utils.drawLine` and the color self-test's bar-painting
+loop both called — unconditionally downconverts its color argument via
+`value:getColor8()` before writing any pixels (lines ~1711, ~1722),
+**even into a genuine `TYPE_BBRGB32` buffer**. Different ink hues produce
+different luminance values on that conversion, which is exactly why the
+self-test's bars appeared as *distinguishable* grayscale shades rather
+than a single flat gray — real color info was being discarded at the
+paint call itself, every single time, regardless of buffer type, gate
+state, or refresh waveform. `BlitBuffer:paintRectRGB32(x, y, w, h, color,
+setter)` is the type-aware sibling function that exists specifically to
+avoid this: it preserves full color on RGB32/RGB16 buffers and still
+degrades correctly to grayscale on BB8/BB8A buffers (`Color8` also
+implements `:getColorRGB32()`), so it's a safe, unconditional replacement
+regardless of hardware color capability.
+
+**Fix shipped:** both call sites (`lib/canvas_utils.lua`'s `drawLine`,
+used by every live stroke segment and every StrokeBuffer repaint/tighten
+pass; and `drawingcanvas.lua`'s `_runColorSelfTest` bar-painting loop) now
+call `paintRectRGB32` instead of `paintRect`. Chrome-strip calls
+(background fill, borders, hamburger icon) were left untouched — they
+pass `Blitbuffer.COLOR_BLACK`/`COLOR_WHITE` (already `Color8`, luminance
+by design), which is exactly what the generic `paintRect` is for. Spec
+coverage added in `spec/canvas_utils_spec.lua` (`drawLine` describe block)
+asserting `paintRectRGB32` is called, using a recording fake BlitBuffer,
+plus a test confirming a bb exposing only the old `paintRect` errors
+loudly rather than silently falling back to the broken behavior.
+
+**Needs one more on-device confirmation:** deploy this commit and re-run
+the color self-test — the bars should now show true color, and ink drawn
+after the tighten pass should too. If they don't, something else remains;
+if they do, this investigation is genuinely closed. The eraser is fixed
+(order-independent latch, six event-order scenarios reviewed) and the
+debug-log wiring is confirmed end-to-end working.
+
+Loose end (independent of the above): the WFM capture that led to the
+retracted conclusion was done on a build that still showed the self-test
+dialog overlapping the bar block — the merged-region symptom in that
+capture (`63,83` to `1137x1368`, matching the pre-height-cap-fix numbers
+exactly) suggests the device was running the commit just before
+`63493b0` at capture time. Redeploy the latest branch tip (this fix
+included) for a clean test.
+
+---
+
+**Status update (2026-07, earlier this round):** on device, the self-test bars
 are now visible (the prior round's UI fix worked) — but they render as
 distinguishable grayscale shades (different luminance per color, not flat
 gray), never actual color, with every plugin-level gate reading true. The
