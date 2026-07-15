@@ -123,6 +123,20 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
             lib:writeState(state)
             return page_idx, nb:pageCount(), path
         end,
+
+        -- Page picker (onPageNumberTap). Unlike on_page_forward, never
+        -- extends the notebook -- clamped to existing pages only (the
+        -- SpinWidget caller already clamps its value to [1, page_count],
+        -- this is a defensive second clamp).
+        on_page_jump = function(idx)
+            idx = math.max(1, math.min(idx, nb:pageCount()))
+            page_idx = idx
+            local path = nb:pagePath(page_idx)
+            state.last_notebook_uuid = nb.uuid
+            state.last_page_index    = page_idx
+            lib:writeState(state)
+            return page_idx, nb:pageCount(), path
+        end,
     })
 end
 

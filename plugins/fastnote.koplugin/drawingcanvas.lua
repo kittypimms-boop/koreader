@@ -123,6 +123,9 @@ local DrawingCanvas = InputContainer:extend{
     -- Each returns (new_page_idx, total_pages, path) or nil at boundary.
     on_page_forward    = nil,
     on_page_back       = nil,
+    -- Jump to an arbitrary page number (the page-picker dialog). Same
+    -- return contract as on_page_forward/on_page_back.
+    on_page_jump       = nil,
 
     _bb           = nil,           -- BlitBuffer (display cache)
     _stroke_buf   = nil,           -- StrokeBuffer (source of truth, Stage 4)
@@ -388,6 +391,20 @@ function DrawingCanvas:init()
         },
     }
 
+    -- Page number: center portion of chrome strip, between the exit and
+    -- tools zones -- tap to open the page picker (onPageNumberTap).
+    self.ges_events.PageNumberTap = {
+        GestureRange:new{
+            ges   = "tap",
+            range = Geom:new{
+                x = CHROME_EXIT_W,
+                y = 0,
+                w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W,
+                h = CHROME_HEIGHT,
+            },
+        },
+    }
+
     -- Drawing gesture zones: always registered.
     -- On device (use_raw_input=true), onDrawStroke returns early unless
     -- finger_draw is enabled, keeping the emulator path always working.
@@ -603,6 +620,25 @@ function DrawingCanvas:onExitTap(_, ges)
         self:_doClose()
         return true
     end
+end
+
+--- Page picker: tap the "n / N" readout to jump to an arbitrary page.
+function DrawingCanvas:onPageNumberTap()
+    logger.dbg("FastNote canvas: page number tap")
+    local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
+    if not ok_sw then return true end
+    UIManager:show(SpinWidget:new{
+        title_text    = "Go to page",
+        value         = self.page_index,
+        value_min     = 1,
+        value_max     = self.page_count,
+        value_step    = 1,
+        default_value = self.page_index,
+        callback      = function(spin)
+            self:_navigateToPage(spin.value)
+        end,
+    })
+    return true
 end
 
 function DrawingCanvas:onMenuTap()
@@ -1021,14 +1057,23 @@ function DrawingCanvas:_digToScreen(rx, ry)
 end
 
 function DrawingCanvas:_updateGestureZones()
-    -- After rotation dimen.w changes; MenuTap x must track the right edge.
-    -- ExitTap is always at x=0 so it never needs updating.
+    -- After rotation dimen.w changes; MenuTap x must track the right edge,
+    -- and PageNumberTap's width must track the gap between the two side
+    -- zones. ExitTap is always at x=0 so it never needs updating.
     if not (self.ges_events.MenuTap and self.ges_events.MenuTap[1]) then return end
     local r = self.ges_events.MenuTap[1].range
     r.x = self.dimen.w - CHROME_TOOLS_W
     r.y = 0
     r.w = CHROME_TOOLS_W
     r.h = CHROME_HEIGHT
+
+    if self.ges_events.PageNumberTap and self.ges_events.PageNumberTap[1] then
+        local pr = self.ges_events.PageNumberTap[1].range
+        pr.x = CHROME_EXIT_W
+        pr.y = 0
+        pr.w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W
+        pr.h = CHROME_HEIGHT
+    end
 end
 
 --- Rebuild self._bb from StrokeBuffer's true stroke colors, without
@@ -1867,6 +1912,32 @@ function DrawingCanvas:_navigatePage(delta)
     local new_idx, new_count, new_path = cb()
     if not new_path then return end   -- at boundary (page 1 going back, etc.)
 
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Jump directly to an arbitrary page (the page-picker dialog,
+-- onPageNumberTap). A deliberate jump, not accidental over-advancing --
+-- always clears the blank-page-streak guard, same as backward
+-- navigation in _navigatePage.
+-- @int idx  target page number (1-indexed; the SpinWidget caller already
+--           clamps to [1, page_count])
+function DrawingCanvas:_navigateToPage(idx)
+    if not self.on_page_jump then return end
+    if idx == self.page_index then return end
+
+    self._prev_page_was_blank = false
+    self:_autoSave()
+
+    local new_idx, new_count, new_path = self.on_page_jump(idx)
+    if not new_path then return end
+
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Shared tail of page navigation: swap _stroke_buf/display for a newly
+-- resolved page and repaint. Shared by _navigatePage (+-1) and
+-- _navigateToPage (jump to an arbitrary index).
+function DrawingCanvas:_applyPageNavigation(new_idx, new_count, new_path)
     self.page_index = new_idx
     self.page_count = new_count
 

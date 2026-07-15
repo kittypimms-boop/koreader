@@ -145,6 +145,8 @@ each navigation attempt:
 
 ## Ask 1: page picker — tap the page-number readout, type a page to jump to
 
+**Status: IMPLEMENTED, needs on-device confirmation.**
+
 **Investigation:** the "n / N" text in the chrome strip is painted by
 `_paintChrome` (~586) but has **no associated tap gesture zone** today —
 only `ExitTap` (left) and `MenuTap` (right) exist in the chrome strip;
@@ -173,6 +175,25 @@ pattern for "enter a page number."
 - Interacts with Bug 2: jumping via the picker should probably reset
   `self._blank_streak` too (it's a deliberate navigation, not
   accidental button mashing).
+
+**What shipped:** matches the proposed design above, with
+`_navigatePage`'s common tail extracted into a shared
+`_applyPageNavigation(new_idx, new_count, new_path)` used by both
+`_navigatePage` (±1) and the new `_navigateToPage(idx)` (arbitrary jump).
+`_navigateToPage` no-ops if `idx == self.page_index` and always clears
+the Bug-2 blank-streak guard (`self._prev_page_was_blank = false`),
+matching backward navigation's treatment — a deliberate jump isn't the
+"accidentally over-advanced" scenario that guard exists for.
+`on_page_jump` in `main.lua` clamps to `[1, nb:pageCount()]` (defensive —
+the `SpinWidget`'s own `value_min`/`value_max` already constrain the
+input) and deliberately does **not** extend the notebook the way
+`on_page_forward` does; the picker only jumps within existing pages.
+`busted spec/`: unchanged at 267/0 (all new code is widget/gesture glue
+and a `main.lua` callback — not unit-tested per this repo's convention).
+Needs on-device confirmation: tapping the page-number readout opens the
+picker; entering a page number jumps there; the notebook auto-saves
+before jumping (via `_autoSave()`, same as `_navigatePage`); rotation
+doesn't misplace the tap zone.
 
 ---
 
