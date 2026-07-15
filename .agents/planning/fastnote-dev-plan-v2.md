@@ -854,8 +854,11 @@ report Y in the opposite sense from the screen).
 
 Calling these out because someone will ask:
 
-- **Text recognition (OCR on handwriting).** Out of scope; not feasible on
-  device CPU. Plausible as an export-time step on desktop.
+- **Text recognition (OCR on handwriting).** Out of scope for now; not
+  worth building until fastnote's core features are done. See
+  `.agents/planning/fastnote-ocr-landscape-research.md` for a landscape
+  survey (device CPU class, what Kobo's own MyScript-based feature does,
+  candidate open engines) kept for a possible future side project.
 - **Real-time collaboration / sync.** Could be added later by syncing
   `<koreader_data>/fastnote/` via Syncthing or similar.
 - **PDF / book annotation overlay.** Different problem (lives over KOReader's
