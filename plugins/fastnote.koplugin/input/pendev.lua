@@ -292,7 +292,10 @@ end
 -- Handles both single-touch (Wacom) and MT pen (Elan combo chip) protocols.
 -- On MT devices, synthesizes ABS_X/Y/PRESSURE + BTN_TOUCH into the SM from
 -- the pen's ABS_MT_* events so the state machine stays protocol-agnostic.
--- @func cb  Callback receiving {type, x, y, pressure, tool} tables.
+-- @func cb  Callback receiving {type, x, y, pressure, tool} tables for
+--   pen events (down/move/up/hover from the state machine), or
+--   {type = "side_button"} on a side-button press (see the BTN_STYLUS/
+--   BTN_STYLUS2 EV_KEY handling below).
 function PenDev:poll(cb)
     if not self.fd then return end
 
@@ -359,9 +362,20 @@ function PenDev:poll(cb)
                         self.sm:feed_key(BTN_TOOL_PEN, 1, nil)
                     elseif action == "side_button" then
                         -- Not the configured eraser code -- the side button.
-                        -- Not wired to any tool state yet (future feature
-                        -- surface); log for diagnostics only.
+                        -- BTN_STYLUS/BTN_STYLUS2 travel over the EMR link, so
+                        -- this fires whenever the digitizer can sense the pen
+                        -- at all (proximity range), not only on screen
+                        -- contact -- exactly the "pen near" trigger the quick
+                        -- menu wants (see
+                        -- .agents/plans/post-color-fix-followups.md, Ask 2).
+                        -- Only dispatch on press (value=1); no release action
+                        -- is defined yet. DrawingCanvas's poll callback
+                        -- decides whether to act on it (e.g. suppressing it
+                        -- while a stroke is in progress).
                         logger.dbg("FastNote pendev: side button", codes.name_of(ec), "=", ev)
+                        if ev == 1 and cb then
+                            cb({type = "side_button"})
+                        end
                     end
 
                 -- For MT pen devices the Elan fires EV_KEY BTN_TOUCH=1 at

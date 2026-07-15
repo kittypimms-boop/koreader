@@ -394,20 +394,6 @@ function DrawingCanvas:init()
         GestureRange:new{ges="pan_release", range=self.dimen},
     }
 
-    -- Double-tap anywhere below the chrome strip opens the quick-access overlay
-    -- (color picker + sensitivity).  Chrome tap zones take priority for the top strip.
-    self.ges_events.QuickDoubleTap = {
-        GestureRange:new{
-            ges   = "double_tap",
-            range = Geom:new{
-                x = 0,
-                y = CHROME_HEIGHT,
-                w = self.dimen.w,
-                h = self.dimen.h - CHROME_HEIGHT,
-            },
-        },
-    }
-
     -- ── Stage 5: load existing page ───────────────────────────────────────
 
     if self.load_path then
@@ -797,13 +783,14 @@ function DrawingCanvas:onMenuTap()
     return true
 end
 
-function DrawingCanvas:onQuickDoubleTap()
-    self:_showQuickMenu()
-    return true
-end
-
 --- Compact overlay: ink color palette + contact sensitivity.
--- Opens on double-tap anywhere on the drawing area.
+-- Opens on a pen side-button press (see the "side_button" branch in
+-- _pollPen) -- the pen only needs to be in EMR proximity range, not
+-- touching the screen, and the press is ignored while a stroke is in
+-- progress. Previously bound to a double-tap gesture; that trigger was
+-- removed (reliability issues reported on device) in favor of the side
+-- button being the sole trigger -- see
+-- .agents/plans/post-color-fix-followups.md, Ask 2.
 function DrawingCanvas:_showQuickMenu()
     -- Dismiss any previously-open quick menu (e.g. user double-tapped again
     -- without selecting, or tapped outside which leaves _quick_menu stale).
@@ -1602,6 +1589,17 @@ function DrawingCanvas:_pollPen()
             end
             self._last_pen_x = nil
             self._last_pen_y = nil
+
+        elseif ev.type == "side_button" then
+            -- Suppress while a stroke is actively being drawn -- a press
+            -- resting on the button mid-stroke (e.g. normal grip) must not
+            -- interrupt drawing. _last_pen_x is nil exactly when no pen
+            -- stroke is in progress (see the "up" branch above, which
+            -- clears it). See .agents/plans/post-color-fix-followups.md,
+            -- Ask 2.
+            if not self._last_pen_x then
+                self:_showQuickMenu()
+            end
         end
     end)
 

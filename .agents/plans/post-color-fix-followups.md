@@ -167,45 +167,37 @@ pattern for "enter a page number."
 
 ## Ask 2: pen secondary (side) button opens the quick menu
 
-**Ask:** now that the eraser/side-button signals are correctly
-identified, use the side button to open "a smaller subset of the
-hamburger menu — just pen colors + contact sensitivity."
+**Status: IMPLEMENTED, needs on-device confirmation.**
 
-**Investigation:** `_showQuickMenu()` (~807-867) is **already exactly
-this** — color palette + contact sensitivity — currently opened only via
-`onQuickDoubleTap` (double-tap gesture below the chrome strip). The side
-button's signal already reaches `input/pendev.lua`'s poll loop today:
+**Ask, refined after discussion:** double-tap (the quick menu's original
+trigger) had reliability issues on device, so the side button is now the
+**sole** trigger — not an addition alongside double-tap. Must fire
+whenever the digitizer can sense the pen at all ("near" — proximity, not
+requiring screen contact), and must be suppressed while a stroke is
+actively being drawn.
 
-```lua
-elseif action == "side_button" then
-    -- Not the configured eraser code -- the side button.
-    -- Not wired to any tool state yet (future feature surface); log for
-    -- diagnostics only.
-    logger.dbg("FastNote pendev: side button", codes.name_of(ec), "=", ev)
-end
-```
-
-— it's decoded but deliberately not dispatched anywhere yet (this
-comment was written during the eraser-hardening round, anticipating this
-exact ask).
-
-**Proposed design:**
-- `pendev.lua`'s `side_button` branch calls `cb({type = "side_button",
-  value = ev})` (or similar) instead of only logging, so `_pollPen`'s
-  callback in `drawingcanvas.lua` can react.
-- `_pollPen`'s callback gets a new branch: on `ev.type == "side_button"
-  and ev.value == 1` (press, not release), call `self:_showQuickMenu()`.
-- **Open design question, needs on-device judgment:** the maintainer
-  earlier observed the side button being held *while drawing* changes
-  line width (a pressure-reporting artifact, not a bug — see
-  `.agents/plans/eraser-capture-runbook.md`). If the button is naturally
-  rested-on during normal grip, firing the quick menu on every press
-  could be disruptive mid-stroke. Consider gating the dispatch on
-  `self._stroke_x == nil` (not currently mid-stroke) so a press during
-  active drawing doesn't interrupt it — flagging this as a judgment call
-  for on-device testing rather than deciding it here.
-- Not unit-testable (FFI input path + widget glue) — validate on device
-  per the TDD skill's carve-out for `input/`.
+**What shipped:**
+- `input/pendev.lua`'s `side_button` branch (in the `BTN_STYLUS`/
+  `BTN_STYLUS2` `EV_KEY` handler) now calls `cb({type = "side_button"})`
+  on press (`ev == 1`) only — no release event is dispatched. Since
+  `BTN_STYLUS`/`BTN_STYLUS2` travel over the EMR link, this already only
+  fires when the pen is within proximity range, giving "near, not
+  necessarily touching" for free — no separate proximity check needed.
+- `drawingcanvas.lua`'s `_pollPen` poll callback gained an
+  `ev.type == "side_button"` branch that calls `self:_showQuickMenu()`,
+  gated on `not self._last_pen_x` — nil exactly when no pen stroke is in
+  progress (the same flag the "up" branch already clears), so a press
+  mid-stroke is a no-op.
+- The double-tap trigger was removed entirely: `self.ges_events
+  .QuickDoubleTap` registration and `DrawingCanvas:onQuickDoubleTap()`
+  deleted (no other code referenced them). `_showQuickMenu()`'s doc
+  comment updated to describe the new trigger and why the old one was
+  removed.
+- Not unit-testable (FFI input path + widget glue) — `busted spec/`
+  stayed at 263/0 (no lib/ behavior changed). **Needs on-device
+  confirmation**: side-button press with pen hovering (not touching)
+  opens the menu; press while a stroke is in progress does nothing;
+  double-tap no longer opens anything.
 
 ---
 
