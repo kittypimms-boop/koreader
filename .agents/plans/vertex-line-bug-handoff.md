@@ -1,7 +1,10 @@
 # Handoff: spurious "vertex line" bug (still open) + round status
 
-**Status: OPEN, unresolved after three fix attempts. Written for
-continuity across a chat compression — self-contained, read this first.**
+**Status: OPEN, unresolved after three fix attempts, but two more
+concrete real gaps were fixed in Round 4 (see bottom of this doc). Written
+for continuity across a chat compression — self-contained, read this
+first. The body below (Rounds 1-3) is kept as-written for the evidence
+trail; read the "Round 4" section at the end for current state.**
 
 Branch: `claude/pencil-color-drawing-perf-3jztxr` (PR #12). All work
 described below is committed and pushed. `busted spec/` (run from
@@ -254,7 +257,7 @@ In order:
    `.agents/plans/color-pipeline-diagnosis-and-fix.md` — Task C2's
    original "draw black, bloom color" design.
 
-## Current branch state
+## Current branch state (as of Round 3 / original writing)
 
 `claude/pencil-color-drawing-perf-3jztxr`, all commits pushed. Recent
 commits, newest first: `0f0d1db` (dialog-suspend fix, Round 2 of this
@@ -263,3 +266,92 @@ bug), `0e2b999` (Ask 5, auto color-toggle), `1ed0306` (page picker),
 `49b345d` (Round 1 of this bug, chrome-strip stroke-close),
 `9e7d8b1` (the `paintRectRGB32` color fix that closed out the prior
 investigation). `busted spec/`: 271 successes / 0 failures.
+
+---
+
+## Round 4 (2026-07): two more real gaps fixed; corner-glitch hypothesis instrumented
+
+Picking this up after the above was written: re-read `drawingcanvas.lua`,
+`lib/strokebuffer.lua`, `lib/pen_statemachine.lua`, and `input/pendev.lua`
+end to end looking specifically for what could produce a line to a fixed
+"lower left origin" point, tied to `live_color_refresh` changing value.
+
+**Found and fixed gap 1 — the "leading hypothesis" from the original
+writeup above was correct and is now fixed.** `onDrawStroke`/
+`onDrawStrokeEnd` now check `self._dialog_open` and return immediately,
+exactly the change flagged above as "the most concrete, actionable next
+step." Confirmed via code reading that the `DrawStroke`/`DrawStrokeEnd`
+gesture zone really is `range = self.dimen` (whole canvas) and really
+isn't gated by dialog stacking — KOReader's gesture detector routing
+assumption from Round 2's "Scope note" doesn't hold for this specific
+`ges_events` registration.
+
+**Found and fixed gap 2 — new, not previously identified.**
+`_dialogOpened()` set `self._dialog_open = true` but did nothing else;
+the actual clearing of `_last_pen_x`/`_last_pen_y` happened *reactively*,
+inside `_pollPen`'s own `down`/`move` branch, only when a pen event
+arrived *while* the dialog was open. If the user's interaction with the
+dialog doesn't involve the pen at all — the common case: pen was last
+down mid-letter or just-lifted, then the user taps a menu button with a
+**finger** — no pen event ever arrives during the dialog's lifetime to
+trigger that reactive clear. `_last_pen_x`/`_last_pen_y` (correctly
+pointing at wherever the pen last was — the end of the last letter
+written) stay stale. The very next real pen-down, once the dialog closes
+and writing resumes, sees `self._last_pen_x` non-nil and draws
+`_drawSegment(stale_last_x, stale_last_y, new_x, new_y, lw)` — a real
+line painted straight into `_bb`, connecting the end of the *previous*
+letter to the start of the *next* one, **never recorded in
+StrokeBuffer** (matches structural-analysis option (b) from the original
+writeup above almost exactly: a stray paint operation bypassing
+StrokeBuffer). Fixed by making `_dialogOpened()` itself eagerly close any
+open stroke and clear all pen/touch/gesture tracking fields
+synchronously, rather than waiting for a poll event that may never come.
+
+**Not fixed, deliberately — a third, still-unconfirmed hypothesis.** The
+"lower left origin" wording doesn't obviously follow from either gap
+above (both would connect to wherever the pen/gesture *actually* was, not
+to a fixed corner). `_digToScreen`'s existing `[0,1]` clamp — present
+"in case of out-of-range values during fast movement" per its own comment
+— maps a digitizer reading of `(nx=0, ny=0)` to screen point `(0, H-1)`
+under `rotation_mode = 3` (this device's recommended default): the
+bottom-left corner. A Wacom EMR proximity-in glitch reporting garbage/
+zero coordinates on the first sample of a fresh contact is a known class
+of hardware quirk, and would produce a genuine new short spurious stroke
+(consistent with the "committed strokes are never mutated" structural
+finding), correlated with menu use only because lifting-and-resetting the
+pen around a menu interaction is exactly when such a glitch is most
+likely — not because of `live_color_refresh` or dialogs per se. This
+wasn't shipped as a fix because a coordinate-rejection heuristic without
+confirming evidence risks silently rejecting legitimate strokes that
+start near a screen edge — a worse failure mode than the bug itself.
+Instead, the existing "FastNote pen down" `logger.dbg` line
+(`_pollPen`, `drawingcanvas.lua`) now also logs raw `x`/`y`, computed
+screen `sx`/`sy`, `raw_at_bound` (true if the raw reading is at the
+digitizer's calibrated axis min/max — the glitch signature), and
+`stale_last` (true if `_last_pen_x` was non-nil going into this down —
+would indicate gap 2 above is *still* firing somehow even after the fix).
+
+**If the bug recurs after this round:** enable `debug_input_log` (Tools →
+More tools → Developer options → both debug-logging toggles, **then
+restart KOReader** — see the restart gotcha in `.agents/notes/
+waveform-refresh-research.md`), reproduce, and grep
+`fastnote/input.log` for "FastNote pen down" lines around the corruption.
+`raw_at_bound=true` confirms the corner-glitch hypothesis (next step:
+reject/debounce a down sample at the calibrated boundary, carefully, with
+a device test for genuine edge-of-screen strokes). `stale_last=true`
+means gaps 1/2 above didn't fully close — re-check for a third code path
+that reads/writes `_last_pen_x` without a `_dialog_open` check (grep
+`_last_pen_x` in `drawingcanvas.lua`). Neither flag set means the
+mechanism is something not yet considered — fall back to instrumenting
+`Stroke:addPoint`/`StrokeBuffer:penDown` directly (recommended next step
+4 from the original writeup above).
+
+`busted spec/`: 271/0, unchanged (no `lib/` code touched this round).
+
+### Current branch state (Round 4)
+
+Branch `claude/pencil-color-drawing-perf-3jztxr`. Round 4's changes are
+in `drawingcanvas.lua` only: `_dialogOpened()`'s eager reset, the
+`_dialog_open` guard in `onDrawStroke`/`onDrawStrokeEnd`, and the
+extended pen-down debug log line. Not yet committed as of this doc
+update — see git log on the branch for the actual commit once pushed.
