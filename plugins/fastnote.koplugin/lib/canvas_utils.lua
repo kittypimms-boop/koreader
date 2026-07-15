@@ -190,6 +190,29 @@ function canvas_utils.selftest_layout(screen_w, screen_h, chrome_h, bar_count,
     return { x = x, y = y, w = w, h = h }
 end
 
+--- Decide whether selecting an ink color should turn on the
+-- live_color_refresh experiment (Ask 3 -- see
+-- .agents/plans/post-color-fix-followups.md). Picking any color other
+-- than black enables it, so live ink previews at its true hue while
+-- drawing; picking black, or being in dark mode, disables it -- neither
+-- ever needs it: black-only ink has nothing for live_color_refresh to
+-- preview, and dark-mode ink is always shown solid white/black
+-- regardless of the flag (see _strokeColor / the stroke-color-invariant
+-- note) until switching back to light mode.
+--
+-- This only decides the AUTOMATIC response to a color pick or a dark-
+-- mode toggle -- the hamburger menu's manual live_color_refresh toggle
+-- still works afterward as an explicit override.
+--
+-- @param hex        string   canonical #rrggbb ink color, e.g. from PALETTE
+-- @param dark_mode  boolean
+-- @return boolean
+function canvas_utils.auto_live_color_refresh(hex, dark_mode)
+    if dark_mode then return false end
+    if hex == "#000000" then return false end
+    return true
+end
+
 --- Decide whether forward page navigation should be blocked because the
 -- previous page and the current page (the two most recent pages, right
 -- now) are both empty -- a guard against accidentally creating an

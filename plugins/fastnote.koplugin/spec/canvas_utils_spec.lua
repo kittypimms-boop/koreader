@@ -252,6 +252,30 @@ describe("canvas_utils", function()
         end)
     end)
 
+    describe("auto_live_color_refresh", function()
+        -- Ask 3: picking a non-black color auto-enables live_color_refresh
+        -- (experimental color mode); picking black, or being in dark mode,
+        -- auto-disables it -- black-only ink and dark-mode ink (always
+        -- shown white/black regardless of the flag) never need it. See
+        -- .agents/plans/post-color-fix-followups.md.
+
+        it("enables for a non-black color in light mode", function()
+            assert.is_true(utils.auto_live_color_refresh("#cc2222", false))
+        end)
+
+        it("disables for black in light mode", function()
+            assert.is_false(utils.auto_live_color_refresh("#000000", false))
+        end)
+
+        it("disables in dark mode even for a non-black color", function()
+            assert.is_false(utils.auto_live_color_refresh("#cc2222", true))
+        end)
+
+        it("disables in dark mode for black too", function()
+            assert.is_false(utils.auto_live_color_refresh("#000000", true))
+        end)
+    end)
+
     describe("live_ink_mode", function()
         -- Task C2 ("draw black, bloom color"): pure decision of whether a
         -- live-drawn segment should paint into _bb as solid ink or the

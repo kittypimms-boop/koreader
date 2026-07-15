@@ -233,7 +233,10 @@ actively being drawn.
 
 ---
 
-## Ask 3: auto-toggle `live_color_refresh` from color/dark-mode choices (future)
+## Ask 3: auto-toggle `live_color_refresh` from color/dark-mode choices
+
+**Status: IMPLEMENTED, needs on-device confirmation. All five items in
+this plan are now implemented.**
 
 **Ask:** picking a non-black color should auto-enable
 `live_color_refresh`; picking black should auto-disable it (not needed
@@ -266,15 +269,30 @@ comparison identifies "black selected."
   over — consider extracting a shared `_makeColorButton(entry, close_fn)`
   helper if this doesn't overcomplicate the diff.
 
-**Documentation note requested by the maintainer, worth capturing
-regardless of when the toggle behavior above ships:** confirmed on
+**What shipped:** matches the proposed design. Rather than a
+`_makeColorButton` closure factory, extracted the common side effect
+(not the button-building) into a shared `DrawingCanvas:_selectColor(hex)`
+method — sets `self._current_color`, fires `on_color_change`, and calls
+`canvas_utils.auto_live_color_refresh(hex, self._dark_mode)` — called
+from both `color_btn` callbacks after their respective close logic, and
+from `_toggleDarkMode` after `self._dark_mode` flips. This keeps the two
+menus' differing close mechanisms (a local `close()` closure vs.
+`self._quick_menu`) untouched while guaranteeing the auto-toggle rule
+can't drift between the two color pickers. `fastnote.conf.example`'s
+`live_color_refresh` doc comment updated to describe the auto-toggle and
+clarify the config value is only the canvas-open starting state. `busted
+spec/`: 271/0 (4 new cases). Needs on-device confirmation: picking a
+non-black color turns on live color ink; picking black turns it off;
+entering dark mode turns it off regardless of the selected color; the
+manual hamburger-menu toggle still works as an override afterward.
+
+**Documentation note requested by the maintainer — done:** confirmed on
 device — painting in dark mode with a color (e.g. blue), with
 `live_color_refresh` off, then switching to light mode, correctly shows
 the true stored color. This is the existing dark-mode-is-a-display-only-
 transform design (`.agents/notes/stroke-color-invariant.md`,
 `_rebuildDisplayFromStrokes`'s `override = self._dark_mode and
 Blitbuffer.COLOR_WHITE or nil`) working as intended, now that the
-`paintRectRGB32` fix means color actually reaches the screen at all. Add
-a short confirmed-behavior note to `stroke-color-invariant.md` when this
-round's code changes are made, regardless of whether the auto-toggle
-feature itself ships in the same pass.
+`paintRectRGB32` fix means color actually reaches the screen at all. A
+"Confirmed on device (2026-07)" section was added to
+`stroke-color-invariant.md` recording this.

@@ -668,9 +668,7 @@ function DrawingCanvas:onMenuTap()
             text = lbl,
             callback = function()
                 close()
-                self._current_color = entry.hex
-                if self.on_color_change then self.on_color_change(entry.hex) end
-                logger.dbg("FastNote canvas: ink color =", entry.hex)
+                self:_selectColor(entry.hex)
             end,
         }
     end
@@ -848,9 +846,7 @@ function DrawingCanvas:_showQuickMenu()
             callback = function()
                 UIManager:close(self._quick_menu)
                 self._quick_menu = nil
-                self._current_color = entry.hex
-                if self.on_color_change then self.on_color_change(entry.hex) end
-                logger.dbg("FastNote canvas: ink color =", entry.hex)
+                self:_selectColor(entry.hex)
             end,
         }
     end
@@ -1804,12 +1800,33 @@ end
 function DrawingCanvas:_toggleDarkMode()
     self._dark_mode = not self._dark_mode
     self._page_dirty = true
+    -- Ask 3: dark mode always shows ink solid white/black regardless of
+    -- live_color_refresh, so it's never needed there -- auto-disable it.
+    -- See canvas_utils.auto_live_color_refresh.
+    self.live_color_refresh = utils.auto_live_color_refresh(self._current_color, self._dark_mode)
     self:_repaintAll()
     UIManager:setDirty(self, "full")
     if self.on_dark_mode_change then
         self.on_dark_mode_change(self._dark_mode)
     end
-    logger.dbg("FastNote canvas: dark_mode =", self._dark_mode)
+    logger.dbg("FastNote canvas: dark_mode =", self._dark_mode,
+               "live_color_refresh =", self.live_color_refresh)
+end
+
+--- Apply an ink color selection: update _current_color, persist via
+-- on_color_change, and auto-toggle live_color_refresh (Ask 3 -- see
+-- canvas_utils.auto_live_color_refresh for the rule). Shared by both
+-- color pickers (hamburger menu + quick menu) so the auto-toggle logic
+-- can't drift between two copies. The hamburger menu's manual
+-- live_color_refresh toggle still works afterward as an explicit
+-- override -- this only decides the automatic response to a pick.
+-- @string hex  canonical #rrggbb ink color, e.g. from PALETTE
+function DrawingCanvas:_selectColor(hex)
+    self._current_color = hex
+    if self.on_color_change then self.on_color_change(hex) end
+    self.live_color_refresh = utils.auto_live_color_refresh(hex, self._dark_mode)
+    logger.dbg("FastNote canvas: ink color =", hex,
+               "live_color_refresh =", self.live_color_refresh)
 end
 
 --- Show a confirmation dialog before clearing the page.
