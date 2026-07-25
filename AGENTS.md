@@ -29,10 +29,10 @@ See `.agents/ADRs/ADR-007-direct-to-master-no-prs.md` for the reasoning.
 ## Where things live
 
 ```
+CLAUDE.md                    ← one-line `@AGENTS.md` import (this file is the source)
 plugins/fastnote.koplugin/   ← all active development; has its own AGENTS.md index
-  CLAUDE.md → AGENTS.md     ← symlink; Claude Code's lazy-load entry point for the plugin
+  CLAUDE.md                 ← same one-line import, for the plugin's AGENTS.md
 .agents/                     ← ADRs, planning, notes, superseded plans (repo root — see below)
-  AGENTS.md                 ← index of that directory; CLAUDE.md → AGENTS.md symlink beside it
 .github/
   instructions/              ← facts/conventions (Copilot reads natively; Claude Code via .claude/rules symlink)
   skills/agents-md-authoring/           ← workflow for AGENTS.md and .agents/ docs
