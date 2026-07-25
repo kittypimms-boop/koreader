@@ -53,8 +53,11 @@ graph LR
   emulator, and because W1 is reproducible in the emulator (see below).
 - **W1 before the UI work** — it's the user's stated blocker on daily use,
   and it's already analysed in `.agents/notes/finger-draw-input-latency.md`.
-- **W3 before W4** — thumbnails settle the browser's row-rendering approach,
-  and W4 rebuilds that browser. Doing W4 first means building the folder UI
+- **W3 before W4, and they ship as one screen.** W4 rebuilds the loading
+  menu around recents + a collapsible tree + per-notebook previews, and
+  those previews *are* W3's output. Build the thumbnail generator and cache
+  first (W3, invisible except for better-looking rows), then rebuild the
+  screen once (W4). Reversing the order means building the loading menu
   twice.
 - **W5 is a side quest**, safe to interleave anywhere; it must stay behind a
   flag and must not become a dependency of anything else.
@@ -181,20 +184,67 @@ The single-notebook branch's restore logic is the same three lines; extract
 a helper rather than writing a third copy (the repo's rule: a second
 copy-paste means it needs a name — see `lua.instructions.md`).
 
+### The fallback rule (user-specified, applies everywhere)
+
+**Any time a notebook or page path fails to resolve — moved, renamed,
+deleted, or just wrong — fall back to showing the loading menu. Never error,
+never open a blank canvas at a dead path.**
+
+This is a cross-cutting rule, not a W2 detail. It matters more under D2,
+where folder renames move real directories, so W4 inherits it too. Concrete
+obligations:
+
+- Validate before showing the canvas: the notebook resolves by uuid **and**
+  `nb:pagePath(idx)` names a file that exists. Either check failing →
+  loading menu.
+- Same check on the resume path, the browser's open path, and any future
+  "recent notebooks" shortcut — all three can hold a stale reference.
+- Fail quietly. A user whose folder reorganisation dropped them at the
+  loading menu understands what happened; a Lua traceback tells them
+  nothing.
+
+> **Terminology:** the user calls this screen the **loading menu**. In the
+> code it is `ui/browser.lua`, shown via `main.lua:_showBrowser`. Same
+> screen. W4 turns it into recents + tree + previews, at which point
+> "browser" undersells it — expect the name to drift.
+
+### Per-notebook last page (needed by W4's recents row)
+
+`last_page_index` in `state.lua` is **global** — it means "the page of
+`last_notebook_uuid`", and it is meaningless for any other notebook. W4's
+recent-notebooks row needs the last page for **each** of three notebooks,
+which this cannot express.
+
+Store it per notebook instead: a `last_page` field in that notebook's own
+`notebook.lua` metadata, written by the same callbacks that write
+`state.last_page_index` today. Three reasons this beats widening
+`state.lua`:
+
+- It travels with the notebook directory, so a D2 folder move can't
+  orphan it.
+- It scales to any number of recents without schema churn.
+- It sidesteps `writeState`'s scalar-only limitation entirely.
+
+`state.lua` then holds only the recents list (see W4) and app-wide display
+state. Keep `last_page_index` writing during the transition so a downgrade
+doesn't lose the user's place, and drop it once the per-notebook field has
+shipped.
+
 ### Pitfalls
 
-- **`writeState` only persists strings and numbers.** Booleans are silently
-  dropped — that's why `dark_mode` is stored as `1`/`0`. If you add a
-  boolean state key, encode it the same way or extend `writeState` (and
-  spec it).
+- **`writeState` only persists strings and numbers.** Look at the
+  implementation: it iterates `pairs(t)` and writes only `string` and
+  `number` values. Booleans are silently dropped — that's why `dark_mode` is
+  stored as `1`/`0`. **Tables are dropped too**, which is why the recents
+  list can't just be assigned as an array (see W4).
 - **The stored page index can outlive its page.** Pages can be deleted;
   `last_page_index` is not updated when they are. The existing
   `math.max(1, math.min(idx, nb:pageCount()))` clamp is what makes this
-  safe — preserve it in the new path.
+  safe — preserve it in the new path, and in the per-notebook field above.
 - **The stored notebook can be gone entirely** (deleted from the browser).
   `byUUID` returns nil; handle it rather than indexing nil.
-- **Don't strand the browser.** If launch always resumes, the only route to
-  the browser is the canvas hamburger's existing `on_show_browser`. Verify
+- **Don't strand the loading menu.** If launch always resumes, the only
+  route back is the canvas hamburger's existing `on_show_browser`. Verify
   that route works before shipping, or the user has no way to switch
   notebooks.
 
@@ -211,7 +261,8 @@ in the emulator.
 
 ## W3 — Notebook thumbnails
 
-**Goal:** the browser shows a visual preview per notebook.
+**Goal:** a cached first-page preview image per notebook, for the loading
+menu W4 builds (recents tiles + tree rows).
 
 ### Current state
 
@@ -241,8 +292,16 @@ possible; at minimum steal the caching approach.
 3. **Invalidation.** A thumbnail whose page has changed is worse than none.
    Store the source page's mtime (or stroke count) alongside it and
    regenerate on mismatch.
-4. **List vs grid.** Grid looks better; list is closer to what exists today
-   (`ui/browser.lua` uses a plain `Menu`).
+4. **~~List vs grid~~ — settled by W4: both.** The loading menu the user
+   specified uses tiles for the recents row and thumbnailed rows for the
+   tree. So the generator must produce one image usable at two sizes; render
+   at the larger (tile) size and let the row rendering scale down, rather
+   than caching two files per notebook.
+
+**Which page gets thumbnailed: page 1.** The user asked for "the first page
+of said notebook" — so this is not the *current* page and not the last-edited
+page. That simplifies invalidation considerably: only edits to page 1 dirty
+the thumbnail, and pages 2..n can be ignored entirely.
 
 ### Pitfalls
 
@@ -393,24 +452,89 @@ Do this **first**, before any folder feature is wired up:
 This is not optional polish. `rm -rf` with an unquoted user-supplied string
 is how a notes library gets destroyed by a folder named `My Notes; oops`.
 
-### The move-to-folder UI
+### The loading menu — the screen this workstream really builds
 
-The user's described flow: a `...` options entry per notebook → "Move to
-folder" → an expandable/collapsible tree of existing folders, allowing
-rename/add/delete inline.
+The user specified the layout directly. Top to bottom:
 
-**KOReader has no expandable tree widget.** `Menu` is flat and paginated.
-Two ways to get there:
+```
+┌──────────────────────────────────────────┐
+│ Recent                                   │
+│  [thumb] [thumb] [thumb]                 │  ← last 3 opened, tap = jump
+│   Ideas   Work    Journal                │    straight to that notebook's
+├──────────────────────────────────────────┤    last-opened page
+│ ▾ Work                                   │
+│     [thumb] Meeting notes    12p · Jul 3 │  ← collapsible tree,
+│   ▸ Projects                             │    previews per notebook
+│ ▸ Personal                               │
+│   [thumb] Scratch            2p  · Jul 1 │  ← unfiled, root level
+└──────────────────────────────────────────┘
+```
 
-1. **Breadcrumb navigation** (recommended): entering a folder replaces the
-   menu's `item_table` and pushes a breadcrumb in the title; a ".." row goes
-   back. This is how KOReader's own file browser behaves, it's far less
-   work, and it matches user muscle memory.
-2. **Simulated tree**: build a flat list with indent prefixes and
-   expand/collapse toggles that rebuild the list. Looks closer to the
-   request, but you're hand-rolling tree state on a paginated widget.
+Three pieces, each with its own gotchas.
 
-Start with (1); revisit only if it genuinely feels wrong on device.
+**1. Recents row (last 3 opened).**
+Tapping a recent jumps to that notebook's last-opened page — which is
+exactly why W2 moves last-page tracking into per-notebook metadata. Read
+that section first; the global `last_page_index` cannot serve this.
+
+Storing the list is the other half. `Library:writeState` **drops table
+values on the floor** (it writes only strings and numbers), so
+`state.recent = {uuid1, uuid2, uuid3}` silently persists as nothing. Two
+honest options:
+
+- Flat scalar keys — `recent_1`, `recent_2`, `recent_3`. Zero changes to
+  `writeState`, ugly, and a fixed cap of 3 baked into the schema.
+- Extend `writeState` to serialise a flat array of strings. Slightly more
+  code, spec-able in `library_spec.lua`, and the cap becomes a UI choice
+  instead of a storage one. **Preferred** — the cap will change the moment
+  the user sees four notebooks they use daily.
+
+Either way, the recents list is a *cache of uuids*, never paths, and every
+entry gets the W2 fallback treatment: a uuid that no longer resolves is
+skipped silently and the row shows fewer than three. Never show a dead tile.
+
+**2. Collapsible directory tree.**
+The user asked for expandable/collapsible nodes twice, so build that — the
+breadcrumb alternative considered earlier is off the table.
+
+**KOReader has no tree widget.** `Menu` is a flat, paginated list. The way
+to get a tree out of it is to keep the tree in your own model and flatten it
+to visible rows on each render:
+
+- Keep `expanded = {[folder_path] = true}` as view state, held by the
+  loading menu, not persisted in `.folder.lua` (expansion is a UI mood, not
+  a property of the folder). Persisting it across sessions is a nice
+  follow-up, not part of the first cut.
+- Render: walk the tree depth-first, skipping children of collapsed nodes,
+  emitting one row each with an indent prefix and a `▸`/`▾` marker.
+- A folder row's tap toggles expansion and rebuilds `item_table`. A notebook
+  row's tap opens it.
+
+**The pagination interaction is the part that will bite.** Expanding a node
+inserts rows, which reflows every page boundary below it. Expand something
+near the bottom of page 1 and the rows you just revealed may land on page 2,
+so the screen appears not to have changed. Mitigate by recomputing which
+page contains the toggled node after the rebuild and jumping there — do it
+in the first cut, not as polish, because the alternative reads as a broken
+button.
+
+**3. Preview thumbnails.**
+Both the recents tiles and the tree's notebook rows show the notebook's
+**first page** rendered small. That is W3's output — see that workstream for
+generation, caching, and invalidation. This workstream just consumes
+`nb:getThumbnailPath()` and must degrade gracefully when the file isn't
+there yet (placeholder, never a blank row, never a stall waiting on
+generation).
+
+### The move-to-folder flow
+
+Per-notebook `...` options entry → "Move to folder" → the same tree widget
+from above in a picking mode, with create/rename/delete available inline.
+
+Build the tree renderer **once** and parameterise it (browse mode → tap
+opens the notebook; pick mode → tap selects a destination). Two copies of
+tree-flattening logic that drift apart is the predictable failure here, and
+the repo's own rule says the second copy-paste means it needs a name.
 
 ### Deletion confirmation
 
@@ -557,17 +681,136 @@ handwriting recognizers (the MyScript class, the ones that feel magic) want
 a timestamped stroke stream. Without timestamps you are doing offline,
 bitmap-based OCR on a rasterized page.
 
-### The one decision worth making early
+### The one decision worth making early — and what the format would be
 
-Adding timestamps is cheap *now* and expensive later — the storage format is
-young and the user base is one person. It is a breaking change to
-`Stroke.toTable`/`fromTable` and the SVG `<metadata>` JSON block, so it
-needs a version field in that metadata and an ADR (ADR-001 covers the
-storage format; this extends it).
+Adding timestamps is cheap *now* and expensive later: the format is young
+and there is one user. Reversing the decision later means every page written
+in the meantime lacks the data and can never be recovered. So decide it
+deliberately.
 
-Deciding "no timestamps ever" is also fine — but decide it deliberately
-rather than by default, because reversing it later means every page written
-in the meantime lacks the data.
+**Yes, pages are SVG — and they stay SVG.** Timestamps do not change that.
+Here is exactly where they'd live.
+
+#### What the format is today
+
+`lib/stroke.lua` stores points as a flat array, **stride 3**:
+
+```lua
+pts = {x1, y1, w1,  x2, y2, w2,  ...}   -- w = pressure-derived line width
+```
+
+`lib/svg.lua` writes two representations of the same strokes into one file:
+
+```xml
+<svg …>
+  <rect …/>
+  <polyline points="x,y x,y …" stroke="#cc2222" stroke-width="3" …/>  ← visual
+  <metadata>
+    <fn:data xmlns:fn="urn:fastnote:1">
+      {"version":1,"w":1264,"h":1680,"strokes":[{"color":"#cc2222","pts":[…]}]}
+    </fn:data>
+  </metadata>
+</svg>
+```
+
+The `<polyline>` elements are what any SVG viewer renders; the JSON block in
+`<metadata>` is the lossless per-point record fastnote reads back
+(`svg.read` tries JSON first, falls back to parsing polylines). ADR-001
+covers this design.
+
+**The key consequence: timestamps go in the JSON metadata block only.** The
+`<polyline>` elements are untouched, so the file remains a valid, viewable
+SVG. That property is the whole point of ADR-001 and must not be traded away
+for recognition features.
+
+#### Option A — widen the stride to 4
+
+```lua
+pts = {x1, y1, w1, t1,  x2, y2, w2, t2, ...}
+```
+
+Simple to describe, unpleasant to implement: the literal `3` is hardcoded in
+**six** loops — `Stroke:isEmpty` (`< 6`), `pointCount` (`/3`), `bbox`,
+`hitTest`, `paintTo` (all `for i = 4, #pts, 3`), and `svg.write`'s averaging
+loop. Miss one and geometry silently corrupts — strokes render with points
+interpreted as widths. If you take this path, replace every literal with a
+`POINT_STRIDE` constant in the same commit.
+
+#### Option B — parallel timing array (recommended)
+
+Leave `pts` alone at stride 3. Add timing beside it:
+
+```lua
+{
+  color = "#cc2222",
+  pts   = {x1,y1,w1, x2,y2,w2, ...},   -- unchanged, stride 3
+  t0    = 1748736123456,               -- stroke start, ms
+  ts    = {0, 8, 17, 25, ...}          -- ms deltas from t0, one per point
+}
+```
+
+Why this wins:
+
+- **Zero changes to the six geometry loops.** No silent-corruption class of
+  bug at all.
+- **Backward compatible:** old files have no `ts`; `Stroke.fromTable` sets
+  it nil, and everything works — timing is simply absent.
+- **Forward compatible:** an older build reading a new file ignores `ts` and
+  renders correctly, because the geometry array is unchanged.
+- **Deltas keep it small.** Storing `1748736123456` per point would roughly
+  double the JSON; small integer deltas (`0, 8, 17`) cost ~3 characters
+  each. Rough order of magnitude on a densely written page (~200 strokes ×
+  ~40 points): the existing `pts` runs ~80 KB of JSON text, and deltas add
+  ~30 KB. Measure on a real page before committing to it — that estimate is
+  arithmetic, not observation.
+- `t0` as an absolute millisecond value gives inter-stroke gaps, which is
+  what word and line segmentation actually needs.
+
+The cost is two arrays that must stay in lockstep. Enforce it in
+`Stroke:addPoint` (append to both, always) and assert
+`#ts == #pts/3` in `fromTable`, degrading to "no timing" on mismatch rather
+than trusting a corrupt file.
+
+#### Option C — per-stroke times only
+
+Just `t0` and `t_end`, no per-point array. Gives stroke ordering (already
+implicit in array order) and pen-up durations, which is enough for
+segmenting words and lines — but no velocity, no intra-stroke dynamics.
+Cheapest by far. A defensible stopping point if the OCR work stays at the
+bitmap level, since bitmap recognition uses none of it.
+
+#### Where the clock comes from — a constraint, not a detail
+
+`lib/stroke.lua` is deliberately dependency-free: *"Pure Lua; no KOReader
+runtime dependencies for all methods except `paintTo`."* That is what makes
+it busted-testable, and it must not be broken for this.
+
+So **`stroke.lua` must never read the clock itself.** The timestamp is
+passed in by the caller — `Stroke:addPoint(x, y, w, t)` — and
+`drawingcanvas.lua` supplies it from KOReader's `ui/time` (already required
+there for `LIVE_REFRESH_INTERVAL_FTS`). `os.time()` is useless here: it has
+one-second resolution and pen samples arrive every ~8 ms.
+
+Tests then inject synthetic timestamps, which is the same injectable-clock
+pattern `lib/palmreject.lua` already uses for `clock_fn`.
+
+#### Versioning and the ADR
+
+Bump the metadata block to `"version": 2` once timestamps ship. Today's
+`svg.read` doesn't inspect `version` at all — it only checks that
+`data.strokes` is a table — so the bump is safe for old readers and gives
+future ones something to branch on.
+
+This extends ADR-001 rather than replacing it. Per the repo's convention,
+add to ADR-001's Consequences and write a new ADR for the timing format
+decision itself; don't rewrite ADR-001's Decision text.
+
+#### The honest caveat
+
+Under D3, milestone 1 is bitmap OCR, which **uses none of this**. Timestamps
+are insurance: cheap to add now, impossible to backfill later. If they slow
+down anything else, defer them — but defer them knowing that every page
+written meanwhile is permanently timing-less.
 
 ### Milestone 1 (D3: the cheap proof-of-concept)
 
@@ -625,6 +868,11 @@ open.
 folder storage model (W4), thumbnail generation and caching strategy (W3),
 stroke timestamps if adopted (W6). One per settled decision, written when
 it's settled — not in advance.
+
+**Existing ADRs that need Consequences addenda** (append, never rewrite the
+Decision text): **ADR-006** once folders land, since it mandates a flat UUID
+layout; **ADR-001** if timestamps ship, since it defines the SVG + metadata
+format they extend.
 
 **Doc-as-code:** every code change carries its doc change in the same pass —
 `fastnote.conf.example` for new config keys, the plugin AGENTS.md File Map
