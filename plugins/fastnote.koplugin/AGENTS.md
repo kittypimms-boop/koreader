@@ -58,11 +58,20 @@ The macOS CI workflow (`.github/workflows/build.yml`) is manual-trigger only.
 
 ## Current State
 
+**Feature complete for daily use; the work now is tidying, not building.**
 Core drawing, palm rejection, SVG persistence, notebook browser, eraser,
-undo/redo, dark mode, and the 6-color palette are all implemented and
-passing `busted spec/`. Remaining open item: Stage 13 (optional polish —
-thumbnails, PDF export), not started. For the full stage-by-stage status,
-see `.agents/planning/fastnote-dev-plan-v2.md`.
+undo/redo, dark mode, the 6-color palette, and live color ink are all
+implemented and passing `busted spec/`. Live color is confirmed working on
+device and no longer carries an "experimental" label. Stage 13 (optional
+polish — thumbnails, PDF export) remains unstarted. For the stage-by-stage
+breakdown of what each stage covers, see
+`.agents/planning/fastnote-dev-plan-v2.md` (a design doc — it carries no
+per-stage status markers; this section is where status lives).
+
+**Known open issue, and the next substantive piece of work:** finger drawing
+loses the first few millimetres of every contact, which breaks handwriting
+readability when lifting between words. The pen path is unaffected. See
+`.agents/notes/finger-draw-input-latency.md`.
 
 **Known hardware quirk:** the Elan combo chip handles pen and touch on the
 **same** device node (`event1`), not separate nodes as the original design
@@ -81,8 +90,10 @@ fastnote.koplugin/
 │                              chrome strip, and quick-menu color picker (no separate files for these)
 ├── fastnote.conf.example      Documented user config (finger_draw, rotation_mode, tighten_*, live_color_refresh, eraser_button, live_ink_style)
 ├── lib/
-│   ├── canvas_utils.lua       Pure math: compute_dirty_rect, point_in_zone, pressure_to_width
+│   ├── canvas_utils.lua       Pure math + live-ink/live-color decision helpers
+│   ├── color.lua              6-color palette with light/dark variants; color resolution
 │   ├── config.lua             Pure Lua config loader, wired via main.lua's canvas-open path
+│   ├── eventlog.lua           Line-buffered input event log ("Debug log" menu toggle)
 │   ├── input_codes.lua        Shared Linux input event constants (BTN_*/ABS_*, incl. BTN_STYLUS2)
 │   ├── eraser_button.lua      Pure translation: BTN_STYLUS/BTN_STYLUS2 event → eraser tool state
 │   ├── pen_statemachine.lua   Wacom evdev state machine → high-level pen events
@@ -178,6 +189,7 @@ skip the rest.
 | Color / dark mode | Canonical hex storage invariant, why dark mode must be display-only | `notes/stroke-color-invariant.md` |
 | E-ink refresh / waveforms | Kaleido color waveform modes, A2-live + deferred GLRC16 tighten-pass design | `notes/waveform-refresh-research.md` |
 | Input path architecture | Gesture vs. raw-evdev, per-flag scope, hardware eraser detection | `notes/input-path-architecture.md` |
+| Finger-draw latency (open) | Why finger strokes lose their opening millimetres, and the candidate fixes | `notes/finger-draw-input-latency.md` |
 | Canvas widget lifecycle | `self.dimen` mutation rule, orientation re-lock, gesture zone timing | `notes/canvas-widget-gotchas.md` |
 | Known tech debt | Deferred cleanup items and their resolutions | `notes/tech-debt.md` |
 | Storage format | SVG + embedded JSON metadata | `ADRs/ADR-001-svg-with-embedded-json-metadata.md` |
