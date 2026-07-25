@@ -4,6 +4,44 @@ Research notes from the fastnote.koplugin drawing investigation.
 Device: **Kobo Libra Colour** (codename KoboMonza, MTK SoC, Kaleido 3 panel).  
 Framebuffer: **BBRGB32** (32bpp), initialised in `drawingcanvas.lua:init()`.
 
+> ## ⚠️ Most of this file was written while ink was never actually in colour
+>
+> Until commit `9e7d8b1` (2026-07), `lib/canvas_utils.lua`'s `drawLine`
+> called `BlitBuffer:paintRect`, which silently downconverts to luminance
+> even on an RGB32 buffer. **Every stroke and every self-test bar in every
+> experiment recorded below was greyscale before it ever reached the
+> refresh layer** — regardless of buffer type, gate state, or waveform. The
+> full root cause is in "paintRect vs. paintRectRGB32" near the end of this
+> file; read that section before this one.
+>
+> The mechanism findings survive, and the section above says so: the
+> waveform map, dither promotion, gate chain, A2's 1-bit behaviour, the
+> DU/32bpp driver bug, and every timing/lockout result are all real and
+> were never the cause of the missing colour.
+>
+> **What that section does not say, and this banner exists to add:
+> several design decisions were made *because* of the missing colour, and
+> those rest on a premise that has since been falsified.** They were
+> reasonable responses to what was observed; what was observed was an
+> artifact. Re-validate before treating any of them as settled:
+>
+> - **`live_ink_style = "solid"`** (Task C2, "draw black, bloom colour")
+>   exists to work around colour ink appearing as a faint, sparse dither
+>   under A2. That appearance was luminance-converted pixels being
+>   thresholded — not colour ink being thresholded. With real RGB now
+>   reaching the buffer, the workaround may be unnecessary, and its config
+>   default may be wrong.
+> - **`live_color_refresh` "shows muted live colour."** The muting was
+>   measured under the same artifact.
+> - Any conclusion below of the form "colour did not appear" or "appeared
+>   washed out" is describing the bug, not the waveform.
+>
+> This is also why the investigation churned so long: the refresh layer was
+> repeatedly proven sound, correctly, and that was read as "so the problem
+> must be elsewhere in the refresh layer." The pixel data was never checked
+> until last. **When colour is wrong, verify what is being painted before
+> theorising about how it is being refreshed.**
+
 ---
 
 ## Device waveform map (KoboMonza / MTK path, confirmed from squashfs)

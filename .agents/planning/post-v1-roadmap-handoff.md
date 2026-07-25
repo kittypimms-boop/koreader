@@ -138,6 +138,47 @@ not an instructions file.
 
 ---
 
+## W0.5 — Re-validate the colour findings
+
+**Small, do it early, and do it before trusting anything in the colour
+docs.** Not a feature — a correction pass.
+
+Until commit `9e7d8b1` (2026-07), `canvas_utils.drawLine` painted through
+`BlitBuffer:paintRect`, which downconverts to luminance even on an RGB32
+buffer. **Every colour experiment before that fix was run on greyscale
+pixels**, so several workarounds were built against a symptom that no
+longer exists. Background: the banner at the top of
+`.agents/notes/waveform-refresh-research.md`.
+
+**What to re-test, now that real RGB reaches the buffer:**
+
+1. **Is `live_ink_style = "solid"` still needed at all?** It exists to work
+   around "A2 thresholds colour ink into a faint, sparse dither" — but what
+   was being thresholded was luminance-converted pixels. If colour ink now
+   looks acceptable live, the whole draw-black-then-bloom design is
+   unnecessary complexity: a config key, a decision helper
+   (`canvas_utils.live_ink_mode`), a spec block, and a standing source of
+   confusion all go away. **Highest-value question here.**
+2. **Does `live_color_refresh` still look "muted"?** Same artifact.
+   If it doesn't, its config default is worth revisiting too.
+3. **Does the tighten pass still earn its delay?** The *timing* findings
+   are sound — mid-stroke lockout was real and independently caused — so
+   expect the delay to survive. What may change is how much work the pass
+   still has to do.
+
+**What NOT to re-test** — real, and never the cause of the colour gap: the
+device waveform map, the `"partial"` → full-flash promotion after
+`FULL_REFRESH_COUNT`, the gate chain, A2's 1-bit behaviour, the DU/32bpp
+driver bug.
+
+Use the on-device matrix in
+`.github/skills/waveform-experimentation/SKILL.md`. Correct the affected
+sections of the research note in place as you go — don't delete them,
+they're the record of what was tried, and the retraction trail is why the
+next person won't repeat it.
+
+---
+
 ## W1 — Finger-draw first-contact latency
 
 Already analysed. **Do not re-derive it** — read
