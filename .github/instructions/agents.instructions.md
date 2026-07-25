@@ -41,8 +41,33 @@ only that one file, with no other context, can act on it correctly.
 Ask this in order — stop at the first match:
 
 1. **"Where is X handled?" (a location, not an explanation)**
-   → One line in AGENTS.md's File Map or Architecture section. No
-   elaboration beyond a 3-8 word description.
+   → A navigation hint, written at an altitude that survives a refactor:
+   name the directory and the symbol to grep for, not the exact path.
+   "Pen events: `input/pendev.lua` feeds `lib/pen_statemachine.lua` — grep
+   `_pollPen`" ages well; "`drawingcanvas.lua` line 1740" is stale by the
+   end of the session.
+
+   **Do not write a file-by-file map.** A listing of every file with a
+   description of each is the single most drift-prone thing an AGENTS.md can
+   contain: it re-states what `ls` already shows, and every rename, split,
+   or new module silently falsifies it. This repo has shipped phantom
+   entries (`ui/colorpicker.lua`, `ui/chrome.lua`, `input/buttondev.lua`, a
+   `state.lua`) that were listed as real files while the functionality lived
+   inline elsewhere — and, more recently, a config-key list that lost a key.
+   Both were the map going stale, not an author being careless.
+
+   Anthropic's own guidance agrees: "file-by-file descriptions of the
+   codebase" is on the exclude list for context files, and `/doctor`'s trim
+   check strips directory layouts and architecture overviews on the grounds
+   that Claude can derive them from the code, keeping "pitfalls, rationale,
+   and conventions that differ from tool defaults."
+
+   What survives the cut, and belongs in AGENTS.md: the **negative space**
+   ("there is no `ui/colorpicker.lua`; that's inline in
+   `drawingcanvas.lua`"), directory *roles* rather than file inventories,
+   and invariants. Anything longer than that goes in a `notes/` topic file
+   and gets a Topics-table row — `notes/code-layout.md` is the worked
+   example.
 
 2. **A settled architectural decision — this approach over that, and why**
    → New ADR: `.agents/ADRs/ADR-NNN-slug.md`.
@@ -101,6 +126,33 @@ Ask this in order — stop at the first match:
 If nothing above fits, it probably doesn't belong in `.agents/` at all —
 consider whether it's just a code comment, or genuinely not worth writing
 down.
+
+---
+
+## `.agents/` vs. Claude Code's auto memory
+
+Claude Code keeps its own notes per repository, in
+`~/.claude/projects/<project>/memory/` — a `MEMORY.md` index plus topic
+files it writes as it works. That is a different thing from `.agents/`, and
+the two must not become two copies of the same knowledge:
+
+| | `.agents/` | auto memory |
+|---|---|---|
+| Written by | you and the agent, deliberately | the agent, on its own initiative |
+| Lives in | the repo, in git | `~/.claude/`, machine-local, never committed |
+| Seen by | everyone who clones, and every tool | one machine, one user |
+| Reviewed | yes — it lands in a commit | no |
+
+**Anything another person or a future session on another machine needs goes
+in `.agents/`.** Auto memory is a convenience cache: fine for "the emulator
+needs `-D=300` on my box", wrong for an invariant, a decision, or a gotcha
+that outlives the session. If you notice a durable finding sitting only in
+auto memory, promote it here — nobody else can see it there, and it will not
+survive a new machine.
+
+Note the shape of auto memory, though, because it's the model this
+directory follows: a short index that stays loaded, and topic files that are
+read only when the topic comes up.
 
 ---
 

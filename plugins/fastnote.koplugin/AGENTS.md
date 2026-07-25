@@ -100,70 +100,28 @@ rejection is simply disabled.
 
 ---
 
-## File Map
+## Finding your way around
 
-```
-fastnote.koplugin/
-├── _meta.lua                  Plugin metadata — do not add logic here
-├── main.lua                   Entry point: config load, canvas open, notebook routing
-├── drawingcanvas.lua          Canvas widget: input, rendering, menu, chrome, color picker
-├── fastnote.conf.example      Documented user config; keys mirror lib/config.lua DEFAULTS
-├── lib/
-│   ├── canvas_utils.lua       Pure math + live-ink/live-color decision helpers
-│   ├── color.lua              6-color palette with light/dark variants; color resolution
-│   ├── config.lua             Pure Lua config loader, wired via main.lua's canvas-open path
-│   ├── eventlog.lua           Line-buffered input event log ("Debug log" menu toggle)
-│   ├── input_codes.lua        Shared Linux input event constants (BTN_*/ABS_*, incl. BTN_STYLUS2)
-│   ├── eraser_button.lua      Pure translation: BTN_STYLUS/BTN_STYLUS2 event → eraser tool state
-│   ├── pen_statemachine.lua   Wacom evdev state machine → high-level pen events
-│   ├── json.lua               Pure Lua JSON encoder/decoder (no KOReader deps; busted-testable)
-│   ├── stroke.lua             Stroke object: points, hitTest, bbox, paintTo, toTable/fromTable
-│   ├── strokebuffer.lua       Stroke list, undo/redo stack, eraseAt, repaintTo, serialization
-│   ├── svg.lua                svg.write() + svg.read() with <metadata> JSON block
-│   └── palmreject.lua         Proximity-gated palm rejection state machine
-├── input/
-│   ├── pendev.lua             FFI: finds Wacom/Elan, opens fd, polls events → pen_statemachine
-│   └── touchdev.lua           FFI: MT protocol B reader for capacitive touch
-├── model/
-│   ├── notebook.lua           One notebook: ordered page list + metadata
-│   └── library.lua            All notebooks + app-wide state (last-used notebook/page)
-├── ui/
-│   └── browser.lua            Notebook list widget: list/create/rename/delete
-├── spec/                      One *_spec.lua per lib/ and model/ file (busted)
-└── dev-plan-v2.md             Convenience copy of .agents/planning/fastnote-dev-plan-v2.md
-```
+`ls` tells you what files exist; this section only points at the
+non-obvious. Directory roles:
 
-**No separate files exist for the menu, chrome strip, orientation handling,
-or the color picker** — all of that is inside `drawingcanvas.lua`. Looking
-for `ui/colorpicker.lua` or `ui/chrome.lua` is a dead end; they have never
-existed.
+| Directory | Holds | Testable? |
+|---|---|---|
+| `lib/` | Pure Lua — no KOReader dependency, which is why it's unit-testable | `busted` |
+| `model/` | Notebook and library data model, plus app-wide persisted state | `busted` |
+| `input/` | FFI raw-evdev readers | **No** — device only |
+| `ui/` | Only the notebook browser; the rest of the UI is in `drawingcanvas.lua` | emulator |
 
-The `input/` modules use FFI and are not unit-testable — validate on device.
-Everything else under `spec/` runs headless.
+Two invariants that, if violated, reintroduce already-fixed bugs:
 
----
+- **BlitBuffer is a display cache, never the source of truth** — StrokeBuffer
+  is authoritative (ADR-002).
+- **`use_raw_input = Device:isKobo()` picks gesture vs. raw evdev, and both
+  paths must keep working** (ADR-003).
 
-## Architecture
-
-```
-main.lua
-    └── UIManager:show(DrawingCanvas)
-            └── drawingcanvas.lua (InputContainer)
-                    ├── BlitBuffer (display cache — rebuilt by replaying StrokeBuffer)
-                    ├── StrokeBuffer (source of truth for stroke data)
-                    ├── input/ (raw evdev on device)
-                    │       ├── pendev.lua    → pen_statemachine → {down/move/up/hover}
-                    │       └── touchdev.lua  → MT slot events
-                    └── lib/palmreject.lua → filters touch through pen-proximity gate
-```
-
-Two invariants that, if violated, reintroduce fixed bugs:
-
-- **BlitBuffer is a display cache, never the source of truth.** StrokeBuffer
-  is authoritative. See ADR-002.
-- **`use_raw_input = Device:isKobo()` selects gesture vs. raw-evdev input.**
-  Both paths must keep working. See ADR-003 and
-  `.agents/notes/input-path-architecture.md`.
+**For the data flow, the negative-space traps, and where each concern
+actually lives, load `.agents/notes/code-layout.md`** — that's the file to
+read before hunting for something in this directory.
 
 ---
 
@@ -206,7 +164,8 @@ widget code genuinely can't be unit-tested.
   in this codebase.
 - **Documentation changes ride with the code change that needs them** — see
   `.github/skills/documentation-as-code/SKILL.md` (repo root) for what moves
-  together (doc comments, ADRs, config examples, AGENTS.md's File Map).
+  together (doc comments, ADRs, config examples, the `.agents/notes/` topic
+  covering the area you changed).
 - **E-ink refresh / waveform changes:** hard rules in
   `.github/instructions/eink-refresh.instructions.md`; on-device test
   procedure in `.github/skills/waveform-experimentation/SKILL.md` (both
@@ -221,6 +180,7 @@ skip the rest.
 
 | Topic | What it covers | File (repo root `.agents/`) |
 |-------|-----------------|------------------------------|
+| Code layout / data flow | How the pieces connect, and what is deliberately not where you'd expect | `notes/code-layout.md` |
 | Color / dark mode | Canonical hex storage invariant, why dark mode must be display-only | `notes/stroke-color-invariant.md` |
 | E-ink refresh / waveforms | Kaleido color waveform modes, A2-live + deferred GLRC16 tighten-pass design | `notes/waveform-refresh-research.md` |
 | Input path architecture | Gesture vs. raw-evdev, per-flag scope, hardware eraser detection | `notes/input-path-architecture.md` |
