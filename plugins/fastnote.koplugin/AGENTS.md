@@ -33,6 +33,10 @@ touch in the same device node via MT protocol.
 All paths below are relative to the **repo root** (`.agents/` is not inside
 this plugin directory):
 
+- **`.agents/planning/post-v1-roadmap-handoff.md`** — what happens next:
+  six workstreams (emulator, finger latency, resume, thumbnails, folders,
+  hardware input, OCR), the decisions already settled, and sequencing.
+  Start here if you're picking up new work.
 - **`.agents/planning/fastnote-dev-plan-v2.md`** — canonical design doc:
   storage layout, coordinate translation formula, palm rejection algorithm,
   stage-by-stage build plan, open questions. Read before implementing
