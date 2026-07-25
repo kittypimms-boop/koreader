@@ -69,6 +69,13 @@ Ask this in order — stop at the first match:
    and gets a Topics-table row — `notes/code-layout.md` is the worked
    example.
 
+   **Discoverability test, for any listing you're still tempted to write:**
+   a single cheap `ls` already proves a file exists, so existence alone
+   earns no line. Every entry must carry something the listing wouldn't
+   show — a contract, a constraint, or a non-obvious relationship to
+   another file. If most entries would be self-evident from their names,
+   replace the whole list with one sentence naming the entry point.
+
 2. **A settled architectural decision — this approach over that, and why**
    → New ADR: `.agents/ADRs/ADR-NNN-slug.md`.
 
