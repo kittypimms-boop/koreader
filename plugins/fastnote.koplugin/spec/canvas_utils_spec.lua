@@ -252,27 +252,38 @@ describe("canvas_utils", function()
         end)
     end)
 
-    describe("auto_live_color_refresh", function()
-        -- Ask 3: picking a non-black color auto-enables live_color_refresh
-        -- (experimental color mode); picking black, or being in dark mode,
-        -- auto-disables it -- black-only ink and dark-mode ink (always
-        -- shown white/black regardless of the flag) never need it. See
-        -- .agents/plans/post-color-fix-followups.md.
+    describe("live_color_applies", function()
+        -- Suppression gate, NOT a state mutation: the user's
+        -- live_color_refresh preference is never overwritten by a color
+        -- pick or a dark-mode toggle, it is only ignored while the current
+        -- ink has nothing for it to show. That is what makes the
+        -- preference survive a black-ink detour ("remember & restore").
+        -- Live color costs latency (a direct Screen:refreshUI per throttle
+        -- tick) and buys nothing for ink that is already rendered solid.
 
-        it("enables for a non-black color in light mode", function()
-            assert.is_true(utils.auto_live_color_refresh("#cc2222", false))
+        it("applies for a non-black color in light mode", function()
+            assert.is_true(utils.live_color_applies("#cc2222", false))
         end)
 
-        it("disables for black in light mode", function()
-            assert.is_false(utils.auto_live_color_refresh("#000000", false))
+        it("does not apply for black in light mode", function()
+            assert.is_false(utils.live_color_applies("#000000", false))
         end)
 
-        it("disables in dark mode even for a non-black color", function()
-            assert.is_false(utils.auto_live_color_refresh("#cc2222", true))
+        it("does not apply in dark mode even for a non-black color", function()
+            assert.is_false(utils.live_color_applies("#cc2222", true))
         end)
 
-        it("disables in dark mode for black too", function()
-            assert.is_false(utils.auto_live_color_refresh("#000000", true))
+        it("does not apply in dark mode for black either", function()
+            assert.is_false(utils.live_color_applies("#000000", true))
+        end)
+
+        it("applies again once the ink returns to a non-black color", function()
+            -- The black -> color round trip is the whole point of making
+            -- this a gate: same inputs, same answer, no memory of the
+            -- detour needed.
+            assert.is_true(utils.live_color_applies("#2244cc", false))
+            assert.is_false(utils.live_color_applies("#000000", false))
+            assert.is_true(utils.live_color_applies("#2244cc", false))
         end)
     end)
 

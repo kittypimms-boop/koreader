@@ -198,11 +198,11 @@ local DrawingCanvas = InputContainer:extend{
     use_raw_input      = false,    -- false = gesture layer; true = raw evdev
     finger_draw        = false,    -- allow capacitive touch to draw (pen-only default)
 
-    -- Flag-gated experiment (candidate 1, pencil-koplugin-research.md):
-    -- throttled direct-refresh live colour drawing instead of per-segment
-    -- "a2". Only takes effect when _has_color_hw and use_raw_input are both
-    -- true (see _useLiveColorRefresh); toggleable live from the hamburger
-    -- menu, session-only, same as finger_draw.
+    -- Throttled direct-refresh live colour drawing instead of per-segment
+    -- "a2" (candidate 1, pencil-koplugin-research.md). Only takes effect
+    -- when _has_color_hw and use_raw_input are both true AND the current
+    -- ink can show colour (see _useLiveColorRefresh); toggleable live from
+    -- the hamburger menu, session-only, same as finger_draw.
     live_color_refresh = false,
 
     -- Config overrides for the colour tighten pass (lib/config.lua); nil
@@ -660,9 +660,18 @@ function DrawingCanvas:onMenuTap()
     local finger_lbl    = self.finger_draw  and "Finger draw: on"  or "Finger draw: off"
     local eraser_lbl    = self._eraser_locked and "Eraser: on"     or "Eraser: off"
     local mode_lbl      = self._dark_mode  and "Light mode"        or "Dark mode"
-    local live_color_lbl = self.live_color_refresh
-                            and "Live color ink (experimental): on"
-                            or  "Live color ink (experimental): off"
+    -- Three states, not two: the preference can be on while the current ink
+    -- gates it out (black / dark mode), and a plain "on" there would read as
+    -- a bug when live color visibly isn't happening. See
+    -- canvas_utils.live_color_applies.
+    local live_color_lbl
+    if not self.live_color_refresh then
+        live_color_lbl = "Live color ink: off"
+    elseif utils.live_color_applies(self._current_color, self._dark_mode) then
+        live_color_lbl = "Live color ink: on"
+    else
+        live_color_lbl = "Live color ink: on (paused)"
+    end
     -- Live state, not the config override: _event_log is non-nil exactly
     -- while logging is active (menu toggles must move the label even when
     -- the conf key says otherwise).
@@ -750,8 +759,8 @@ function DrawingCanvas:onMenuTap()
                      self:_confirmClearPage()
                  end},
             },
-            -- Row 4b: live color ink toggle (experimental, flag-gated;
-            -- session-only, same as finger_draw -- see live_color_refresh).
+            -- Row 4b: live color ink toggle (flag-gated; session-only, same
+            -- as finger_draw -- see live_color_refresh).
             {
                 {text = live_color_lbl,
                  callback = function()
@@ -1443,15 +1452,25 @@ function DrawingCanvas:_refreshRect(rect)
 end
 
 --- Whether the flag-gated live-color-refresh path applies right now.
--- EXPERIMENTAL (default off; see live_color_refresh in the defaults table).
--- Only color hardware on the raw evdev pen path qualify — the gesture/
--- emulator path and monochrome hardware always keep the "a2" path in
--- _drawSegment, regardless of this flag's value.
+-- Default off; see live_color_refresh in the defaults table.
+--
+-- Four gates, all of which must pass:
+--   1. self.live_color_refresh — the user's preference (config + menu).
+--   2. Color hardware, and 3. the raw evdev pen path — the gesture/emulator
+--      path and monochrome hardware always keep the "a2" path in
+--      _drawSegment, regardless of the flag's value.
+--   4. utils.live_color_applies — black ink and dark mode have no hue to
+--      preview, and live color costs latency, so it stays out of the way
+--      there. This is a gate, not a mutation: the preference is untouched
+--      and comes back by itself when the ink returns to a color.
 function DrawingCanvas:_useLiveColorRefresh()
-    return self.live_color_refresh and self._has_color_hw and self.use_raw_input
+    return self.live_color_refresh
+       and self._has_color_hw
+       and self.use_raw_input
+       and utils.live_color_applies(self._current_color, self._dark_mode)
 end
 
---- EXPERIMENTAL live_color_refresh path: blit the segment's dirty rect
+--- live_color_refresh path: blit the segment's dirty rect
 -- straight into the framebuffer and throttle a direct Screen:refreshUI
 -- over the accumulated pending rect to at most once per
 -- LIVE_REFRESH_INTERVAL_FTS. Bypasses UIManager entirely — the sanctioned
@@ -1943,33 +1962,35 @@ end
 function DrawingCanvas:_toggleDarkMode()
     self._dark_mode = not self._dark_mode
     self._page_dirty = true
-    -- Ask 3: dark mode always shows ink solid white/black regardless of
-    -- live_color_refresh, so it's never needed there -- auto-disable it.
-    -- See canvas_utils.auto_live_color_refresh.
-    self.live_color_refresh = utils.auto_live_color_refresh(self._current_color, self._dark_mode)
+    -- Dark mode shows ink solid white/black regardless of
+    -- live_color_refresh, so the live pass is suppressed while it's on --
+    -- by _useLiveColorRefresh's gate, not by clobbering the preference
+    -- here, so switching back to light mode restores it. See
+    -- canvas_utils.live_color_applies.
     self:_repaintAll()
     UIManager:setDirty(self, "full")
     if self.on_dark_mode_change then
         self.on_dark_mode_change(self._dark_mode)
     end
     logger.dbg("FastNote canvas: dark_mode =", self._dark_mode,
-               "live_color_refresh =", self.live_color_refresh)
+               "live color active =", self:_useLiveColorRefresh())
 end
 
---- Apply an ink color selection: update _current_color, persist via
--- on_color_change, and auto-toggle live_color_refresh (Ask 3 -- see
--- canvas_utils.auto_live_color_refresh for the rule). Shared by both
--- color pickers (hamburger menu + quick menu) so the auto-toggle logic
--- can't drift between two copies. The hamburger menu's manual
--- live_color_refresh toggle still works afterward as an explicit
--- override -- this only decides the automatic response to a pick.
+--- Apply an ink color selection: update _current_color and persist via
+-- on_color_change. Shared by both color pickers (hamburger menu + quick
+-- menu) so the two can't drift.
+--
+-- Note what this does NOT do: it never touches self.live_color_refresh.
+-- Picking black suppresses the live-color pass through
+-- _useLiveColorRefresh's gate and picking a color un-suppresses it, so a
+-- black-ink detour costs no menu round trip to get live color back. See
+-- canvas_utils.live_color_applies.
 -- @string hex  canonical #rrggbb ink color, e.g. from PALETTE
 function DrawingCanvas:_selectColor(hex)
     self._current_color = hex
     if self.on_color_change then self.on_color_change(hex) end
-    self.live_color_refresh = utils.auto_live_color_refresh(hex, self._dark_mode)
     logger.dbg("FastNote canvas: ink color =", hex,
-               "live_color_refresh =", self.live_color_refresh)
+               "live color active =", self:_useLiveColorRefresh())
 end
 
 --- Show a confirmation dialog before clearing the page.

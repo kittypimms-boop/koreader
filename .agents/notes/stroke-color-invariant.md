@@ -50,6 +50,7 @@ shows the stroke's true stored color — not white, not black. This is
 touched it) plus `_rebuildDisplayFromStrokes` correctly passing `nil` as
 `color_override` once back in light mode, letting each stroke's own
 stored color render. Confirms there's no separate dark-mode-specific
-color path to worry about when reasoning about Ask 3's
-`auto_live_color_refresh` (`lib/canvas_utils.lua`) — it only decides
-what's shown live, never what's stored.
+color path to worry about when reasoning about
+`canvas_utils.live_color_applies` — that gate only decides what's shown
+live, never what's stored, and it deliberately does not mutate the user's
+`live_color_refresh` preference either.

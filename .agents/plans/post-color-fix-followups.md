@@ -412,8 +412,16 @@ actively being drawn.
 
 ## Ask 3: auto-toggle `live_color_refresh` from color/dark-mode choices
 
-**Status: IMPLEMENTED, needs on-device confirmation. All five items in
-this plan are now implemented.**
+**Status: IMPLEMENTED, then SUPERSEDED. All five items in this plan were
+implemented.** The auto-toggle described below shipped as
+`canvas_utils.auto_live_color_refresh`, which overwrote the user's flag on
+every color pick — so a manual "off" was undone by the next pick. It has
+since been replaced by `canvas_utils.live_color_applies`, a suppression
+gate inside `_useLiveColorRefresh` that leaves the preference alone. Same
+observable rule for black and dark mode; the difference is that the
+preference now survives a black-ink detour. The text below is kept as the
+record of the original ask — see the current function's doc comment for
+live behavior.
 
 **Ask:** picking a non-black color should auto-enable
 `live_color_refresh`; picking black should auto-disable it (not needed

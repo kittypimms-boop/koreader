@@ -102,15 +102,18 @@ return {
     -- both in use — the gesture/emulator path and monochrome hardware are
     -- never affected by this flag, regardless of its value.
     --
-    -- This value is only the STARTING state when the canvas opens. During
-    -- the session it is auto-toggled: picking a non-black ink colour turns
-    -- it on, picking black or entering dark mode turns it off (see
-    -- canvas_utils.auto_live_color_refresh) — neither black-only ink nor
-    -- dark-mode ink (always shown solid white/black regardless of this
-    -- flag) benefits from it. It can also still be flipped manually from
-    -- the hamburger menu ("Live color ink (experimental)") as an explicit
-    -- override after the fact; that toggle, like the auto-behaviour, is
-    -- session-only and does not persist back to this file.
+    -- This value is only the STARTING state when the canvas opens; the
+    -- hamburger menu's "Live color ink" toggle flips it for the rest of
+    -- the session and does not persist back to this file.
+    --
+    -- The setting is suppressed — not switched off — while the current ink
+    -- is black, or while dark mode is on. Neither has a hue to preview
+    -- (dark-mode ink is always shown solid white/black regardless of this
+    -- flag), and live colour costs responsiveness, so it stays out of the
+    -- way there. Your preference is untouched: switch from black back to a
+    -- colour and live colour resumes with no menu round trip. The menu
+    -- shows "on (paused)" while it's suppressed this way. See
+    -- canvas_utils.live_color_applies.
     --
     --   false  (default) — unchanged behaviour: per-segment "a2" refresh.
     --   true   — shows live ink colour while drawing.
@@ -155,9 +158,9 @@ return {
     --              while actively drawing -- especially for lighter
     --              colours -- until the tighten pass fires.
     --
-    -- Ignored (no behaviour change) on monochrome hardware, whenever the
-    -- live_color_refresh experiment above is active (that path shows true
-    -- colour live on purpose, so it always wins over "solid"), and when
+    -- Ignored (no behaviour change) on monochrome hardware, whenever
+    -- live_color_refresh above is active (that path shows true colour
+    -- live on purpose, so it always wins over "solid"), and when
     -- tighten_enabled = false (with no tighten pass, nothing would ever
     -- repaint the true colour back over the solid ink).
     --

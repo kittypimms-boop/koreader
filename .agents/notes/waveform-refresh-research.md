@@ -235,15 +235,17 @@ UIManager. pencil.koplugin ships this and users report working live color
 drawing on this exact device+pen. Would show (probably muted) color during
 the stroke while keeping the GLRC16 tighten for final fidelity. Details,
 caveats, and the comparison: `.agents/planning/pencil-koplugin-research.md`.
-**Implemented behind `live_color_refresh` (default off), pending device
-validation.** `drawingcanvas.lua`: `_useLiveColorRefresh`,
+**Implemented behind `live_color_refresh` (default off); confirmed working
+on device.** `drawingcanvas.lua`: `_useLiveColorRefresh`,
 `_liveColorRefresh`, `_flushLiveRefresh`; throttle interval
 `LIVE_REFRESH_INTERVAL` (0.033 s ≈ 30 fps). Only takes the new path when
 color hardware AND the raw evdev pen path are both active — mono hardware
-and the gesture/emulator path are unaffected regardless of the flag. Flag
-is also toggleable live from the hamburger menu ("Live color ink
-(experimental)"), session-only. Run the on-device test matrix in
-`.github/skills/waveform-experimentation/SKILL.md` (flag off for
+and the gesture/emulator path are unaffected regardless of the flag — and
+is additionally suppressed for black ink and in dark mode, where the direct
+refresh costs responsiveness with nothing to show for it
+(`canvas_utils.live_color_applies`). Flag is toggleable live from the
+hamburger menu ("Live color ink"), session-only. Run the on-device test
+matrix in `.github/skills/waveform-experimentation/SKILL.md` (flag off for
 regression, flag on for the new path) before considering a default flip.
 
 ### ~~Deferred colour refresh timer~~ — IMPLEMENTED (see below)

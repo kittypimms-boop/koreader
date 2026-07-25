@@ -10,6 +10,11 @@ No KOReader dependencies — fully unit-testable with busted.
 
 local canvas_utils = {}
 
+-- Canonical black ink, as stored by PALETTE and in the SVG metadata block.
+-- Black never benefits from the live-colour refresh path (see
+-- live_color_applies), so it is named rather than repeated as a literal.
+local BLACK_INK_HEX = "#000000"
+
 --- Compute the bounding rect that must be marked dirty after drawing a line
 -- segment from (x1,y1) to (x2,y2) with a brush of the given width.
 -- The rect is padded by half the brush width on every side so the full
@@ -190,26 +195,36 @@ function canvas_utils.selftest_layout(screen_w, screen_h, chrome_h, bar_count,
     return { x = x, y = y, w = w, h = h }
 end
 
---- Decide whether selecting an ink color should turn on the
--- live_color_refresh experiment (Ask 3 -- see
--- .agents/plans/post-color-fix-followups.md). Picking any color other
--- than black enables it, so live ink previews at its true hue while
--- drawing; picking black, or being in dark mode, disables it -- neither
--- ever needs it: black-only ink has nothing for live_color_refresh to
--- preview, and dark-mode ink is always shown solid white/black
--- regardless of the flag (see _strokeColor / the stroke-color-invariant
--- note) until switching back to light mode.
+--- Decide whether the live_color_refresh path has anything to show for the
+-- ink that is selected right now.
 --
--- This only decides the AUTOMATIC response to a color pick or a dark-
--- mode toggle -- the hamburger menu's manual live_color_refresh toggle
--- still works afterward as an explicit override.
+-- Live colour costs latency: it drives a direct Screen:refreshUI per
+-- throttle tick instead of the cheaper per-segment "a2" refresh, so the
+-- pen/finger feels less responsive while it is engaged. Two cases pay that
+-- cost for nothing and are therefore gated out here:
+--
+--   1. Black ink -- there is no hue for the live pass to preview; the "a2"
+--      path already draws black correctly.
+--   2. Dark mode -- ink is always shown solid white/black regardless of
+--      this flag (see _strokeColor / the stroke-color-invariant note), so
+--      the live pass changes nothing on screen.
+--
+-- This is a GATE, not a state mutation: the user's live_color_refresh
+-- preference (config default plus the hamburger-menu toggle) is never
+-- overwritten by a colour pick or a dark-mode toggle, only ignored while
+-- it would do nothing. That is what lets the preference survive a
+-- black-ink detour -- switch black -> red and live colour is back on,
+-- with no remembered extra state and no menu round trip.
+--
+-- Callers combine this with the hardware/input-path gates; see
+-- DrawingCanvas:_useLiveColorRefresh.
 --
 -- @param hex        string   canonical #rrggbb ink color, e.g. from PALETTE
 -- @param dark_mode  boolean
 -- @return boolean
-function canvas_utils.auto_live_color_refresh(hex, dark_mode)
+function canvas_utils.live_color_applies(hex, dark_mode)
     if dark_mode then return false end
-    if hex == "#000000" then return false end
+    if hex == BLACK_INK_HEX then return false end
     return true
 end
 

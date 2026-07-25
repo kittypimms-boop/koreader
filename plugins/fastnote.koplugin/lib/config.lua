@@ -54,18 +54,17 @@ Config.DEFAULTS = {
     -- false = draw-time A2 only (no deferred colour pass).
     tighten_enabled = true,
 
-    --- EXPERIMENTAL. Throttled direct-refresh live colour drawing
-    -- (pencil.koplugin technique; see
-    -- .agents/planning/pencil-koplugin-research.md candidate 1). Only takes
-    -- effect when colour hardware AND the raw evdev pen path are both in
-    -- use -- the gesture/emulator path and monochrome hardware are never
-    -- affected by this flag.
+    --- Throttled direct-refresh live colour drawing (pencil.koplugin
+    -- technique; see .agents/planning/pencil-koplugin-research.md
+    -- candidate 1). Only takes effect when colour hardware AND the raw
+    -- evdev pen path are both in use -- the gesture/emulator path and
+    -- monochrome hardware are never affected by this flag -- and is
+    -- suppressed for black ink and in dark mode, where it would cost
+    -- responsiveness for no visible gain (canvas_utils.live_color_applies).
     -- false (default) = unchanged per-segment "a2" refresh behaviour.
     -- true  = live segments blit directly into the framebuffer and refresh
     --         via a throttled direct Screen:refreshUI call instead, showing
-    --         (muted) live colour. Not yet validated on the on-device test
-    --         matrix -- see .github/skills/waveform-experimentation/SKILL.md
-    --         before relying on this outside of testing.
+    --         (muted) live colour.
     live_color_refresh = false,
 
     --- Which raw button code the hardware eraser tip sends on this unit.
