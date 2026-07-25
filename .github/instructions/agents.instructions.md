@@ -54,13 +54,35 @@ Ask this in order — stop at the first match:
 
 4. **A multi-step plan, phase breakdown, or research writeup for upcoming
    or in-progress work**
-   → `.agents/planning/` (design docs, research) or `.agents/plans/`
-   (chunk-level implementation plans with a Status line). Not linked from
-   AGENTS.md's Topics table unless it's a primary reference like the dev
-   plan — most planning docs are found by scanning the directory, not
-   indexed individually.
+   → `.agents/planning/` (design docs, research, roadmaps) or
+   `.agents/plans/` (chunk-level implementation plans and handoffs, each
+   opening with a `**Status:**` line). Not linked from AGENTS.md's Topics
+   table unless it's a primary reference like the dev plan — most planning
+   docs are found by scanning the directory, not indexed individually.
 
-5. **A convention that applies repo-wide, not scoped to `.agents/` or one
+   > **`planning/` vs `plans/` is a genuinely confusing pair of names.**
+   > The distinction is scope and lifecycle, not subject: `planning/` holds
+   > durable documents about *what we're building and why* (the dev plan,
+   > research writeups, the post-v1 roadmap); `plans/` holds a record of
+   > *how one specific chunk of work got done*, and every file there carries
+   > a Status line. If you're unsure, ask whether the document will still be
+   > read a year from now for its content (`planning/`) or only as history
+   > (`plans/`).
+
+5. **Ephemeral working notes for the session you're in right now**
+   → `.agents/scratch/` — gitignored, free-form, no conventions. Dead ends
+   explored, half-formed theories, output you're mid-way through reading.
+   Write here freely rather than littering the repo root or, worse, adding
+   half-finished thinking to a tracked file.
+
+   Everything else in `.agents/` is tracked and reviewed; `scratch/` is the
+   one place that isn't. When a scratch note turns out to be durable,
+   promote it: a gotcha becomes a `notes/` topic, a settled choice becomes
+   an ADR, an unfinished piece of work becomes a `plans/` handoff with a
+   Status line. Don't leave durable findings in `scratch/` — nobody else
+   will ever see them.
+
+6. **A convention that applies repo-wide, not scoped to `.agents/` or one
    feature area**
    → mindset/conventions go in a sibling `.github/instructions/<topic>.instructions.md`
    (applies automatically via `applyTo`, same mechanism as this file);
@@ -70,7 +92,7 @@ Ask this in order — stop at the first match:
    example of that split — mirror it rather than mixing both kinds of
    content into one file.
 
-6. **Current status / stage completion**
+7. **Current status / stage completion**
    → One line in AGENTS.md's "Current State", pointing to the planning doc
    for the full breakdown. Never a full stage table or checklist in
    AGENTS.md itself — those go stale fast and belong in the planning doc,

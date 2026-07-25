@@ -50,12 +50,19 @@ that first if you haven't already; this skill assumes it.
 
 ## Context
 
-<the problem; the options considered, briefly>
+<the problem and the constraint that forced a choice>
 
 ## Decision
 
 <what was chosen, concretely — include the actual format/algorithm/structure
 if that's the substance of the decision>
+
+## Alternatives Considered
+
+- **<chosen option>** — why it fits the constraints.
+- **<rejected option>** — Why NOT: <the specific reason — cost, complexity,
+  incompatibility, a failure it would have caused>.
+- **<rejected option>** — Why NOT: <specific reason>.
 
 ## Consequences
 
@@ -63,6 +70,18 @@ if that's the substance of the decision>
 - <what this makes hard, or a tradeoff accepted>
 - <a landmine or non-obvious follow-on effect, if any>
 ```
+
+**The "Why NOT" lines are the highest-value part of an ADR** and the part
+most often skipped. Without them a future agent confidently re-proposes an
+option that was already investigated and rejected, and the only way to find
+that out is to re-do the investigation. One sentence per rejected option is
+enough.
+
+ADR-001 through ADR-007 predate this section and use Context / Decision /
+Consequences only — that's expected, not drift. Don't retrofit an
+Alternatives section onto them by guessing at reasoning that wasn't
+recorded; ADRs are historical records (see `agents.instructions.md`). Use
+the full template for ADR-008 onward.
 
 Use the next sequential ADR number. Remember ADRs are historical records
 once Accepted — see `agents.instructions.md` for that rule before editing

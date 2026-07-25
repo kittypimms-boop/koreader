@@ -46,15 +46,31 @@ this plugin directory):
   Check before re-opening a question that's already been decided.
 - **`.agents/notes/`** — topic references for specific gotcha-prone areas
   of the code (see "Topics" table below).
-- **`.agents/plans/`** — chunk-level implementation plans, mostly historical.
-- **This plugin's own `.agents/planning/next-stages-plan.md`** — an older
-  phase plan; largely superseded, see the status banner at its top.
+- **`.agents/plans/`** — chunk-level implementation plans and handoffs,
+  mostly historical; each opens with a `**Status:**` line.
+- **`.agents/scratch/`** — gitignored. Your working notes for the session
+  you're in. Write here freely instead of leaving half-finished thinking in
+  a tracked file; promote anything durable before you finish.
+**A second, plugin-local `.agents/` also exists**, at
+`plugins/fastnote.koplugin/.agents/` — note the different root. It holds two
+files, both historical:
+
+- `planning/next-stages-plan.md` — an older phase plan, largely superseded;
+  read the status banner at its top before trusting any of it.
+- `ADRs/adr-006-stage12-color-develop.md` — **numbered ADR-006, but it is
+  not the repo-root ADR-006.** The root one is the UUID directory layout;
+  this one is Stage 12's colour model and deferred develop refresh. Two
+  unrelated decisions share a number across the two directories. Check
+  which root you're under before citing "ADR-006".
+
+New content goes in the **repo-root** `.agents/`, not this one.
 
 ---
 
 ## Workflow
 
-**No pull requests. Commit directly to `master` and push.**
+**No pull requests. Commit directly to `master` and push.** Why:
+`.agents/ADRs/ADR-007-direct-to-master-no-prs.md`.
 Local `busted spec/` is the test gate (run from this directory).
 The macOS CI workflow (`.github/workflows/build.yml`) is manual-trigger only.
 
@@ -90,9 +106,8 @@ rejection is simply disabled.
 fastnote.koplugin/
 ├── _meta.lua                  Plugin metadata — do not add logic here
 ├── main.lua                   Entry point: config load, canvas open, notebook routing
-├── drawingcanvas.lua          Drawing canvas widget — ALL input, rendering, menu, orientation,
-│                              chrome strip, and quick-menu color picker (no separate files for these)
-├── fastnote.conf.example      Documented user config (finger_draw, rotation_mode, tighten_*, live_color_refresh, eraser_button, live_ink_style)
+├── drawingcanvas.lua          Canvas widget: input, rendering, menu, chrome, color picker
+├── fastnote.conf.example      Documented user config; keys mirror lib/config.lua DEFAULTS
 ├── lib/
 │   ├── canvas_utils.lua       Pure math + live-ink/live-color decision helpers
 │   ├── color.lua              6-color palette with light/dark variants; color resolution
@@ -114,9 +129,14 @@ fastnote.koplugin/
 │   └── library.lua            All notebooks + app-wide state (last-used notebook/page)
 ├── ui/
 │   └── browser.lua            Notebook list widget: list/create/rename/delete
-├── spec/                      One *_spec.lua per lib/model file above (busted, no KOReader runtime needed)
-└── dev-plan-v2.md             Convenience copy; canonical version in .agents/planning/ (repo root)
+├── spec/                      One *_spec.lua per lib/ and model/ file (busted)
+└── dev-plan-v2.md             Convenience copy of .agents/planning/fastnote-dev-plan-v2.md
 ```
+
+**No separate files exist for the menu, chrome strip, orientation handling,
+or the color picker** — all of that is inside `drawingcanvas.lua`. Looking
+for `ui/colorpicker.lua` or `ui/chrome.lua` is a dead end; they have never
+existed.
 
 The `input/` modules use FFI and are not unit-testable — validate on device.
 Everything else under `spec/` runs headless.
@@ -153,6 +173,17 @@ Two invariants that, if violated, reintroduce fixed bugs:
 cd /path/to/koreader && ./kodev run        # SDL emulator — most work happens here
 cd plugins/fastnote.koplugin && busted spec/   # unit tests, ~2s
 ```
+
+**If `busted` is missing, install it from the distro, not LuaRocks:**
+`sudo apt install lua-busted` (Debian/Ubuntu). `luarocks install busted`
+pulls its dependencies from GitHub tarballs, which fails outright behind a
+proxy or an offline network — a dead end that costs a while to diagnose.
+
+**If `./kodev` fails immediately**, the `base/` submodule is probably not
+initialised — it carries the entire native toolchain. `git submodule update
+--init --recursive`. Full emulator setup, including running it headless over
+SSH and the DPI flag that matters: `.agents/planning/post-v1-roadmap-handoff.md`
+→ W0.
 
 The emulator has no `/dev/input/eventX`, no `EVIOCGABS`, no E-ink waveform
 modes — it renders widgets/BlitBuffer/gestures only. Raw input and refresh
@@ -202,4 +233,5 @@ skip the rest.
 | Hover suppression | Pressure-based BTN_TOUCH synthesis | `ADRs/ADR-004-pressure-based-btn-touch-synthesis.md` |
 | Undo scope | Why undo is per-page | `ADRs/ADR-005-per-page-undo-stack.md` |
 | Notebook storage layout | UUID directory layout | `ADRs/ADR-006-uuid-directory-layout-for-notebooks.md` |
+| Commit-to-master workflow | Why this repo runs without pull requests | `ADRs/ADR-007-direct-to-master-no-prs.md` |
 | Coordinate translation | Rotation-aware raw-to-screen mapping formula | `planning/fastnote-dev-plan-v2.md` → "Coordinate translation" |
