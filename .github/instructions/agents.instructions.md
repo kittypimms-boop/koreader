@@ -136,33 +136,6 @@ down.
 
 ---
 
-## `.agents/` vs. Claude Code's auto memory
-
-Claude Code keeps its own notes per repository, in
-`~/.claude/projects/<project>/memory/` — a `MEMORY.md` index plus topic
-files it writes as it works. That is a different thing from `.agents/`, and
-the two must not become two copies of the same knowledge:
-
-| | `.agents/` | auto memory |
-|---|---|---|
-| Written by | you and the agent, deliberately | the agent, on its own initiative |
-| Lives in | the repo, in git | `~/.claude/`, machine-local, never committed |
-| Seen by | everyone who clones, and every tool | one machine, one user |
-| Reviewed | yes — it lands in a commit | no |
-
-**Anything another person or a future session on another machine needs goes
-in `.agents/`.** Auto memory is a convenience cache: fine for "the emulator
-needs `-D=300` on my box", wrong for an invariant, a decision, or a gotcha
-that outlives the session. If you notice a durable finding sitting only in
-auto memory, promote it here — nobody else can see it there, and it will not
-survive a new machine.
-
-Note the shape of auto memory, though, because it's the model this
-directory follows: a short index that stays loaded, and topic files that are
-read only when the topic comes up.
-
----
-
 ## ADRs are historical records
 
 Once an ADR's Status is Accepted, its Decision text is a record of what was
