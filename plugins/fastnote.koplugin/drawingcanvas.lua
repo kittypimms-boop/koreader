@@ -39,6 +39,7 @@ local Screen            = Device.screen
 local StrokeBuffer      = require("lib/strokebuffer")
 local UIManager         = require("ui/uimanager")
 local logger            = require("logger")
+local shell_quote       = require("lib/shell_quote")
 local time              = require("ui/time")
 local utils             = require("lib/canvas_utils")
 
@@ -549,7 +550,7 @@ function DrawingCanvas:_toggleInputLog()
     -- here; just check for nil and degrade gracefully (lua.instructions.md).
     local DataStorage = require("datastorage")
     local log_dir  = DataStorage:getDataDir() .. "/fastnote"
-    os.execute("mkdir -p " .. log_dir)
+    os.execute("mkdir -p " .. shell_quote.quote(log_dir))
     local log_path = log_dir .. "/input.log"
 
     local log, err = EventLog.new(log_path)

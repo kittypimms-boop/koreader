@@ -49,3 +49,14 @@ Directory layout:
 - **`io.popen("ls -1 ... | sort")`** for scanning — works on Kobo Linux.
   If a future Kobo ships a shell without `ls`, this breaks. Acceptable tradeoff
   for now; `lfs` (LuaFileSystem) would be the alternative.
+
+**Later note (2026-07):** both shell commands above — the `rm -rf` and the
+`ls -1` scan — now interpolate their paths through `lib/shell_quote`. The
+UUID directory names this ADR chose are machine-generated and were never
+themselves dangerous; the quoting is groundwork for folders, where a
+user-typed name reaches the same commands.
+
+The `ls` parse has one hazard that quoting does **not** fix: `ls -1` emits
+one entry per line, so a directory name containing a newline is read back as
+two bogus entries. That is an argument for the `lfs` alternative named above,
+should folders ever let arbitrary names through.

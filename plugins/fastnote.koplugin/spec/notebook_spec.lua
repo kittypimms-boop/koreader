@@ -7,7 +7,8 @@ local plugin_dir = (debug.getinfo(1,"S").source:match("@(.+)/spec/") or "..")
 package.path = plugin_dir .. "/?.lua;" .. plugin_dir .. "/lib/?.lua;" ..
                plugin_dir .. "/model/?.lua;" .. package.path
 
-local Notebook = require("model/notebook")
+local Notebook    = require("model/notebook")
+local shell_quote = require("lib/shell_quote")
 
 describe("Notebook", function()
 
@@ -16,11 +17,11 @@ describe("Notebook", function()
     before_each(function()
         base_dir = os.tmpname()
         os.remove(base_dir)
-        os.execute("mkdir -p " .. base_dir)
+        os.execute("mkdir -p " .. shell_quote.quote(base_dir))
     end)
 
     after_each(function()
-        os.execute("rm -rf " .. base_dir)
+        os.execute("rm -rf " .. shell_quote.quote(base_dir))
     end)
 
     describe("Notebook.create", function()
@@ -218,7 +219,7 @@ describe("Notebook", function()
 
         it("returns nil when the notebook directory is gone", function()
             local nb = Notebook.create("X", base_dir)
-            os.execute("rm -rf '" .. nb.dir .. "'")
+            os.execute("rm -rf " .. shell_quote.quote(nb.dir))
             assert.is_nil(nb:resolvePage(1))
         end)
 

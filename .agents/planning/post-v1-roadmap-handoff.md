@@ -573,6 +573,39 @@ as an error.
 
 ### Blocking prerequisite: shell quoting
 
+**Status: bullet 1 (quoting) is DONE. Bullets 2 and 3 are NOT — this
+section is still blocking, just for a different reason than it was.**
+
+Every interpolated path now goes through `lib/shell_quote.quote` (POSIX
+single-quote wrapping, `'` → `'\''`), covering `model/library.lua`'s
+`mkdir -p`, `rm -rf` and `ls -1` scan, `model/notebook.lua`'s `mkdir -p`,
+and `drawingcanvas.lua`'s log-dir `mkdir -p`. Real-shell round-trip specs
+prove a name like `` x ; rm -rf sentinel ; $(touch pwned) `id` `` is inert.
+
+**Do not read that as "folders are now safe."** Quoting makes the *shell*
+safe; it does nothing about names that are hostile to the *filesystem*, and
+those are bullet 2's job:
+
+- **`/` silently becomes a path separator** — `mkdir -p '<base>/a/b'`
+  happily nests. Quoting cannot catch this; `/` is meaningful to the
+  filesystem, not the shell.
+- **`.` and `..`** escape or collide with the notebooks root.
+- **A newline breaks `Library:_scan` regardless of quoting** — `ls -1` is
+  line-oriented, so one such name reads back as two bogus entries. This is
+  the one hazard quoting genuinely cannot fix, and the strongest argument
+  for dropping the `ls` parse in favour of `lfs`/ffi iteration.
+- Empty-after-trim, leading/trailing whitespace, and a length cap.
+
+What did change: bullet 2's rule set is now smaller and purely a
+filesystem-validity concern, and bullet 3's slug decision is now a
+readability/stability choice rather than a security one.
+
+**Worth doing before W4 adds call sites:** three of the five sites are
+`mkdir -p`. Named helpers (`shell_quote.mkdir_p(path)` and friends) would
+make new call sites safe by default rather than safe by remembering. Left
+undone deliberately — it was outside the quoting task's scope.
+
+
 `model/library.lua` and `model/notebook.lua` build shell commands by string
 concatenation with no quoting:
 

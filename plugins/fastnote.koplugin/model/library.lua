@@ -11,9 +11,15 @@ Storage layout (under <koreader_data>/fastnote/):
       ...
 
 Directory scanning uses io.popen("ls") — works on Kobo Linux.
+
+Every path interpolated into a shell command goes through
+lib/shell_quote — see that module for why. Paths are machine-generated
+UUIDs today, but user-typed folder names are planned, and an unquoted
+`rm -rf` is not something to retrofit later.
 --]]--
 
-local Notebook = require("model/notebook")
+local Notebook    = require("model/notebook")
+local shell_quote = require("lib/shell_quote")
 
 local Library = {}
 Library.__index = Library
@@ -22,7 +28,7 @@ Library.__index = Library
 -- Creates the notebooks sub-directory if missing.
 -- @string base_dir  Absolute path (no trailing slash).
 function Library.new(base_dir)
-    os.execute("mkdir -p " .. base_dir .. "/notebooks")
+    os.execute("mkdir -p " .. shell_quote.quote(base_dir .. "/notebooks"))
     local self = setmetatable({
         base_dir  = base_dir,
         _nbs      = {},   -- uuid -> Notebook
@@ -41,7 +47,10 @@ function Library:_nb_dir()
 end
 
 function Library:_scan()
-    local handle = io.popen("ls -1 " .. self:_nb_dir() .. " 2>/dev/null | sort")
+    -- Only the directory is quoted; `2>/dev/null | sort` is deliberate shell
+    -- syntax, not data.
+    local handle = io.popen("ls -1 " .. shell_quote.quote(self:_nb_dir()) ..
+                            " 2>/dev/null | sort")
     if not handle then return end
     for entry in handle:lines() do
         local meta = self:_nb_dir() .. "/" .. entry .. "/notebook.lua"
@@ -150,7 +159,7 @@ end
 function Library:deleteNotebook(uuid)
     local nb = self._nbs[uuid]
     if not nb then return end
-    os.execute("rm -rf " .. nb.dir)
+    os.execute("rm -rf " .. shell_quote.quote(nb.dir))
     self._nbs[uuid] = nil
     for i, u in ipairs(self._order) do
         if u == uuid then table.remove(self._order, i); break end

@@ -7,7 +7,8 @@ local plugin_dir = (debug.getinfo(1,"S").source:match("@(.+)/spec/") or "..")
 package.path = plugin_dir .. "/?.lua;" .. plugin_dir .. "/lib/?.lua;" ..
                plugin_dir .. "/model/?.lua;" .. package.path
 
-local Library = require("model/library")
+local Library     = require("model/library")
+local shell_quote = require("lib/shell_quote")
 
 describe("Library", function()
 
@@ -16,11 +17,11 @@ describe("Library", function()
     before_each(function()
         base_dir = os.tmpname()
         os.remove(base_dir)
-        os.execute("mkdir -p " .. base_dir)
+        os.execute("mkdir -p " .. shell_quote.quote(base_dir))
     end)
 
     after_each(function()
-        os.execute("rm -rf " .. base_dir)
+        os.execute("rm -rf " .. shell_quote.quote(base_dir))
     end)
 
     describe("Library.new", function()
@@ -182,7 +183,7 @@ describe("Library", function()
         it("returns nil when the notebook directory vanished underneath us", function()
             local lib = Library.new(base_dir)
             local nb  = lib:createNotebook("A")
-            os.execute("rm -rf '" .. nb.dir .. "'")
+            os.execute("rm -rf " .. shell_quote.quote(nb.dir))
             assert.is_nil(lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 1}))
         end)
 
@@ -229,6 +230,55 @@ describe("Library", function()
             assert.equal("New", all[1].name)
             assert.equal("Old", all[2].name)
         end)
+    end)
+
+    -- ── shell safety ──────────────────────────────────────────────────────
+    --
+    -- Library shells out for mkdir/ls/rm. These prove the quoting is applied
+    -- at the call sites, not merely available in lib/shell_quote — a real
+    -- library path under W4's filesystem-folder model will contain
+    -- user-typed text.
+
+    describe("a base_dir containing shell metacharacters", function()
+
+        -- Space, single quote, command substitution, chaining, glob, and a
+        -- separator — but no '/', which no filename may contain.
+        local HOSTILE = "it's $(date) `id` && rm -rf * ; \"x\""
+
+        it("supports the full create / rescan / delete cycle", function()
+            local root = base_dir .. "/" .. HOSTILE
+            local lib  = Library.new(root)
+            local nb   = lib:createNotebook("A")
+            assert.equal(1, lib:notebookCount())
+
+            -- Re-scan from disk: exercises the io.popen("ls") path.
+            local lib2 = Library.new(root)
+            assert.equal(1, lib2:notebookCount())
+            assert.equal("A", lib2:byUUID(nb.uuid).name)
+
+            lib2:deleteNotebook(nb.uuid)
+            assert.equal(0, lib2:notebookCount())
+            assert.is_nil(io.open(nb.dir .. "/notebook.lua", "r"))
+        end)
+
+        it("does not let an embedded rm reach the shell", function()
+            -- Library.new appends "/notebooks" to whatever it is given, so
+            -- the injected command is aimed at <sentinel>/notebooks. Unquoted,
+            -- the `;` ends the mkdir and that rm -rf runs for real.
+            local sentinel = base_dir .. "/sentinel"
+            os.execute("mkdir -p " .. shell_quote.quote(sentinel .. "/notebooks"))
+            local marker = io.open(sentinel .. "/notebooks/marker", "w")
+            marker:write("keep me")
+            marker:close()
+
+            Library.new(base_dir .. "/x ; rm -rf " .. sentinel)
+
+            local survivor = io.open(sentinel .. "/notebooks/marker", "r")
+            assert.truthy(survivor)
+            assert.equal("keep me", survivor:read("*a"))
+            survivor:close()
+        end)
+
     end)
 
 end)

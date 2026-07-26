@@ -9,7 +9,11 @@ Storage layout:
     ...
 
 notebook.lua is a plain Lua table returned by a Lua chunk (loadfile-compatible).
+
+The one shell-out here (`mkdir -p`) quotes its path via lib/shell_quote.
 --]]--
+
+local shell_quote = require("lib/shell_quote")
 
 local Notebook = {}
 Notebook.__index = Notebook
@@ -64,7 +68,7 @@ end
 function Notebook.create(name, base_dir)
     local uuid = _uuid()
     local dir  = base_dir .. "/" .. uuid
-    os.execute("mkdir -p " .. dir)
+    os.execute("mkdir -p " .. shell_quote.quote(dir))
 
     local now = os.time()
     local nb = setmetatable({
