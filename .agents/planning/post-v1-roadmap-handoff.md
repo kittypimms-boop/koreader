@@ -347,7 +347,7 @@ the thumbnail, and pages 2..n can be ignored entirely.
 ### Pitfalls
 
 - **E-ink refresh cost.** A grid of images is a large-area update. Follow
-  `.github/instructions/eink-refresh.instructions.md` — in particular, never
+  `.github/skills/waveform-experimentation/references/eink-refresh-rules.md` — in particular, never
   per-item `"partial"` refreshes, which get promoted to a full flash after
   six.
 - Dark mode: thumbnails are rendered from stroke data, and stroke color is

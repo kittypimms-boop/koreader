@@ -1,17 +1,18 @@
----
-applyTo: "plugins/fastnote.koplugin/drawingcanvas.lua"
-paths:
-  - "plugins/fastnote.koplugin/drawingcanvas.lua"
-description: "E-ink refresh and waveform rules for the drawing canvas on Kobo Libra Colour — which modes are safe for live drawing and which cause invisible strokes, mid-stroke flashes, or missing color."
----
-
 # E-ink refresh conventions (drawing canvas, Kobo Libra Colour)
 
 Hard rules for any code that paints strokes or requests screen refreshes.
 Each was learned from a real on-device failure — the history and evidence
 live in `.agents/notes/waveform-refresh-research.md` (repo root). For the
-procedure to test a refresh/waveform change on device, use
-`.github/skills/waveform-experimentation/SKILL.md`.
+procedure to test a refresh/waveform change on device, see the `SKILL.md`
+alongside this file.
+
+> **This was a `.github/instructions/` file until it moved here.** It was
+> scoped `applyTo: plugins/fastnote.koplugin/drawingcanvas.lua`, which
+> loaded it on *every* edit to that file — menus, page navigation,
+> orientation, input handling — when it only matters for refresh and paint
+> code. Wrong mechanism: these are rules you need when doing one specific
+> kind of work, which is a skill reference, not an always-on path-scoped
+> convention.
 
 ---
 

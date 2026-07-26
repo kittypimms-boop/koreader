@@ -43,7 +43,7 @@ Config.DEFAULTS = {
     -- Default: 2.5 -- matches the device-tuned COLOR_TIGHTEN_DELAY constant.
     -- This value was tuned on real hardware: shorter delays fire the tighten
     -- pass mid-multi-stroke writing and briefly lock out the pen. See
-    -- .github/instructions/eink-refresh.instructions.md before lowering it,
+    -- .github/skills/waveform-experimentation/references/eink-refresh-rules.md before lowering it,
     -- and re-run the multi-stroke writing test in the waveform-experimentation
     -- skill if you do.
     tighten_delay = 2.5,

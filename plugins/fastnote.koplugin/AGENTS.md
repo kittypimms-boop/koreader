@@ -167,7 +167,7 @@ widget code genuinely can't be unit-tested.
   together (doc comments, ADRs, config examples, the `.agents/notes/` topic
   covering the area you changed).
 - **E-ink refresh / waveform changes:** hard rules in
-  `.github/instructions/eink-refresh.instructions.md`; on-device test
+  `.github/skills/waveform-experimentation/references/eink-refresh-rules.md`; on-device test
   procedure in `.github/skills/waveform-experimentation/SKILL.md` (both
   repo root).
 

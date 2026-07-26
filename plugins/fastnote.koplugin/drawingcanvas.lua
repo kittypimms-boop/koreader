@@ -63,7 +63,7 @@ local IDLE_SAVE_DELAY     = 30     -- seconds of inactivity before auto-save
 -- refresh fires over the accumulated stroke bounding box.
 -- Cancels on any pen-down so mid-session strokes are never interrupted.
 -- Device-tuned default; overridable via config (tighten_delay) -- see
--- .github/instructions/eink-refresh.instructions.md before lowering it.
+-- .github/skills/waveform-experimentation/references/eink-refresh-rules.md before lowering it.
 local COLOR_TIGHTEN_DELAY = 2.5
 
 -- live_color_refresh (flag-gated, default off; see DrawingCanvas defaults
@@ -1290,7 +1290,7 @@ function DrawingCanvas:_runColorSelfTest()
 
     -- "full" + dither=true -> GCC16, the highest-fidelity Kaleido color mode
     -- on an intact pipeline. A flash is expected and fine for a one-shot
-    -- diagnostic (see eink-refresh.instructions.md -- one-shot "partial"/
+    -- diagnostic (see waveform-experimentation/references/eink-refresh-rules.md -- one-shot "partial"/
     -- "full" + dither is correct; only per-segment "partial" is the hazard).
     -- Breadcrumb so the maintainer can find the matching mxc_update WFM line
     -- in crash.log by searching for this string (see
@@ -1475,7 +1475,7 @@ end
 -- over the accumulated pending rect to at most once per
 -- LIVE_REFRESH_INTERVAL_FTS. Bypasses UIManager entirely — the sanctioned
 -- escape hatch for high-frequency refresh, see
--- .github/instructions/eink-refresh.instructions.md. StrokeBuffer remains
+-- .github/skills/waveform-experimentation/references/eink-refresh-rules.md. StrokeBuffer remains
 -- authoritative (ADR-002); this only changes what's shown between ticks.
 -- @param rect table {x, y, w, h} — this segment's dirty rect
 function DrawingCanvas:_liveColorRefresh(rect)

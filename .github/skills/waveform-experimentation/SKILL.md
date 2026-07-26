@@ -6,11 +6,13 @@ description: Provides the on-device test procedure for changing E-ink refresh or
 # Waveform experimentation — on-device test workflow
 
 This is the **process** for trying a refresh/waveform change without
-re-tripping a known landmine. The standing rules (which modes are unsafe
-and why) are in `.github/instructions/eink-refresh.instructions.md`, which
-applies automatically when `drawingcanvas.lua` is in play; the full research
-record is `.agents/notes/waveform-refresh-research.md` (repo root). This
-skill assumes both.
+re-tripping a known landmine.
+
+**Load `references/eink-refresh-rules.md` (alongside this file) before
+changing anything** — it holds the standing rules on which modes are unsafe
+and why, including the `paintRect` colour trap. The full research record,
+with its correction history, is `.agents/notes/waveform-refresh-research.md`
+(repo root). This skill assumes both.
 
 The SDL emulator has **no waveform modes** — none of this can be validated
 off-device. Plan for hardware in the loop before starting.
