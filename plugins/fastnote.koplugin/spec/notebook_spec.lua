@@ -142,6 +142,94 @@ describe("Notebook", function()
         end)
     end)
 
+    -- ── per-notebook resume position (W2) ──────────────────────────────────
+
+    describe("Notebook:setLastPage / last_page", function()
+        it("is unset on a freshly created notebook", function()
+            local nb = Notebook.create("X", base_dir)
+            assert.is_nil(nb.last_page)
+        end)
+
+        it("round-trips through save → load", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:addPage()
+            nb:setLastPage(3)
+
+            local nb2 = Notebook.load(nb.uuid, base_dir)
+            assert.equal(3, nb2.last_page)
+        end)
+
+        it("clamps an index beyond pageCount to the last page", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()                      -- 2 pages
+            assert.equal(2, nb:setLastPage(99))
+            assert.equal(2, Notebook.load(nb.uuid, base_dir).last_page)
+        end)
+
+        it("clamps zero, negatives and nil to page 1", function()
+            local nb = Notebook.create("X", base_dir)
+            assert.equal(1, nb:setLastPage(0))
+            assert.equal(1, nb:setLastPage(-5))
+            assert.equal(1, nb:setLastPage(nil))
+        end)
+
+        it("stays unset for notebooks written before the field existed", function()
+            local nb = Notebook.create("X", base_dir)
+            -- Rewrite metadata the old way, without a last_page key.
+            local f = io.open(nb.dir .. "/notebook.lua", "w")
+            f:write('return {\n  name = "X",\n  created_at = 1,\n')
+            f:write('  last_edited = 2,\n  pages = {\n    "page_001.svg",\n  },\n}\n')
+            f:close()
+
+            assert.is_nil(Notebook.load(nb.uuid, base_dir).last_page)
+        end)
+    end)
+
+    describe("Notebook:resolvePage", function()
+        it("returns the clamped index and its path", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            local idx, path = nb:resolvePage(2)
+            assert.equal(2, idx)
+            assert.truthy(path:find("page_002.svg$"))
+        end)
+
+        it("clamps an index beyond pageCount instead of failing", function()
+            local nb = Notebook.create("X", base_dir)
+            local idx, path = nb:resolvePage(99)
+            assert.equal(1, idx)
+            assert.truthy(path:find("page_001.svg$"))
+        end)
+
+        it("clamps a nil or zero index to page 1", function()
+            local nb = Notebook.create("X", base_dir)
+            assert.equal(1, nb:resolvePage(nil))
+            assert.equal(1, nb:resolvePage(0))
+        end)
+
+        it("resolves a page whose SVG has never been written", function()
+            -- Pages only get an SVG on first save; an undrawn page is blank,
+            -- not a dead path.
+            local nb = Notebook.create("X", base_dir)
+            assert.is_nil(io.open(nb:pagePath(1), "r"))
+            assert.equal(1, nb:resolvePage(1))
+        end)
+
+        it("returns nil when the notebook directory is gone", function()
+            local nb = Notebook.create("X", base_dir)
+            os.execute("rm -rf '" .. nb.dir .. "'")
+            assert.is_nil(nb:resolvePage(1))
+        end)
+
+        it("returns nil when the notebook has no pages at all", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:deletePage(1)
+            assert.equal(0, nb:pageCount())
+            assert.is_nil(nb:resolvePage(1))
+        end)
+    end)
+
     describe("Notebook:getThumbnailPath", function()
         it("returns a path ending in thumb.png inside notebook dir", function()
             local nb = Notebook.create("X", base_dir)

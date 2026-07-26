@@ -120,6 +120,81 @@ describe("Library", function()
         end)
     end)
 
+    -- ── resume resolution (W2) ─────────────────────────────────────────────
+
+    describe("Library:resolveResume", function()
+        it("returns nil when state names no notebook", function()
+            local lib = Library.new(base_dir)
+            lib:createNotebook("A")
+            assert.is_nil(lib:resolveResume({}))
+        end)
+
+        it("returns nil when the stored uuid is not in the library", function()
+            local lib = Library.new(base_dir)
+            lib:createNotebook("A")
+            assert.is_nil(lib:resolveResume({last_notebook_uuid = "nb_gone", last_page_index = 1}))
+        end)
+
+        it("resumes the stored notebook at the legacy global page index", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            nb:addPage()
+            nb:addPage()
+
+            local target, idx, path =
+                lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 3})
+            assert.equal(nb, target)
+            assert.equal(3, idx)
+            assert.truthy(path:find("page_003.svg$"))
+        end)
+
+        it("prefers the notebook's own last_page over the global index", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            nb:addPage()
+            nb:setLastPage(2)
+
+            local __, idx = lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 1})
+            assert.equal(2, idx)
+        end)
+
+        it("clamps a stored page index beyond pageCount", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")          -- 1 page
+            local __, idx =
+                lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 42})
+            assert.equal(1, idx)
+        end)
+
+        it("opens an explicitly named notebook, overriding the stored uuid", function()
+            local lib = Library.new(base_dir)
+            local nb1 = lib:createNotebook("A")
+            local nb2 = lib:createNotebook("B")
+            nb2:addPage()
+
+            local target, idx =
+                lib:resolveResume({last_notebook_uuid = nb1.uuid, last_page_index = 2}, nb2.uuid)
+            assert.equal(nb2, target)
+            -- The global index belongs to nb1, so it must not leak into nb2.
+            assert.equal(1, idx)
+        end)
+
+        it("returns nil when the notebook directory vanished underneath us", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            os.execute("rm -rf '" .. nb.dir .. "'")
+            assert.is_nil(lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 1}))
+        end)
+
+        it("tolerates a nil state table", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            local target, idx = lib:resolveResume(nil, nb.uuid)
+            assert.equal(nb, target)
+            assert.equal(1, idx)
+        end)
+    end)
+
     describe("Library:all", function()
         it("returns all notebooks", function()
             local lib = Library.new(base_dir)
