@@ -54,6 +54,31 @@ overwrite the tighten's GLRC16 color with grayscale.
 Also added `hw_dithering` and `isColorEnabled` to the init debug log to help
 diagnose if those gates are false on the device.
 
+> **⚠️ Correction (2026-07): keep the line, but never cite this fix as
+> evidence.** Until commit `9e7d8b1`, `lib/canvas_utils.lua`'s `drawLine`
+> painted through `BlitBuffer:paintRect`, which unconditionally calls
+> `value:getColor8()` before writing any pixel — **even into a genuine
+> `TYPE_BBRGB32` buffer**. Ink was therefore downconverted to luminance
+> before the refresh layer ever saw it, on every path. Color could not have
+> appeared on the tighten refresh whether `self.dithered` was set or not,
+> so **this fix was never validated against the symptom it claims to
+> fix**: it was marked DONE on a symptom that had a different cause, and
+> "color appeared after adding `self.dithered`" cannot have been observed.
+>
+> **Keep `self.dithered = has_color_hw`.** It is independently correct —
+> KOReader's UIManager genuinely reads `widget.dithered` to honor dither
+> promotion from the refresh stack, and that is confirmed from source, not
+> from this experiment. What must not happen is citing Fix E as proof of
+> anything about the color pipeline, or as the reason a later color symptom
+> is or isn't explained.
+>
+> The rest of this file is unaffected: Fix A/B (GLRC16 at ~300–500 ms per
+> segment is a timing measurement), Fix C (menu access), Fix D (the tighten
+> bbox `_cancelTighten` bug), and all of Fix F (eraser / `BTN_STYLUS`
+> level-latch work) were never about what color reached the buffer.
+> Re-validation of the color-dependent claims is tracked in
+> `.agents/planning/post-v1-roadmap-handoff.md` → **W0.5**.
+
 ---
 
 ## Fix F: Eraser end of stylus draws instead of erasing — HARDENED, NEEDS DEVICE TESTING

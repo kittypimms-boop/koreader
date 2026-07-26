@@ -50,6 +50,45 @@ Drawing in real-time with colour waveforms is too slow (~200 ms). Drawing A2 the
 
 **Consequences:** `_dirty_since_develop` accumulates `utils.union_rect` merges per segment; cleared on develop. Pen-down cancels any pending develop timer to avoid colour flicker mid-stroke. Feature is gated by `_has_color_hw` and `_develop_enabled` — no-op on emulator and monochrome devices.
 
+**Consequence added 2026-07 (correction — the decision stands, its
+observed effects do not):** this decision was implemented and then
+exercised on device for months during which **no colour ever reached the
+framebuffer at all.** Until commit `9e7d8b1` (2026-07),
+`lib/canvas_utils.lua`'s `drawLine` — used by every live segment and every
+StrokeBuffer repaint, including this develop/tighten pass — painted
+through `BlitBuffer:paintRect`, which unconditionally calls
+`value:getColor8()` before writing any pixel, **even into a genuine
+`TYPE_BBRGB32` buffer**. Ink was downconverted to luminance before the
+refresh layer ever saw it, so the develop pass's entire purpose ("strokes
+develop into full colour") was never actually observed working. The fix
+switched `drawLine` to `paintRectRGB32`.
+
+What this does and does not change:
+
+- **The decision itself stands.** "A2 live, colour waveform deferred to an
+  idle timer" is the standard Kaleido pattern and matches the stock Kobo
+  notes app; the rejected alternatives were rejected on latency grounds,
+  which the artifact does not touch. A2 being a 1-bit greyscale waveform
+  (§1 Context) is confirmed and unaffected.
+- **The delay value and the pen-down cancel stand.** Every timing and
+  latency finding from the later investigation — including the mid-stroke
+  pen lockout that justifies deferring the pass — was independently
+  caused and remains valid. (The delay was later retuned and the pass
+  renamed "tighten"; see §5.)
+- **What must not be inherited from this era:** any downstream claim that
+  colour looked faint, dotted, muted or absent, and any design built to
+  compensate for that appearance. In particular `live_ink_style = "solid"`
+  ("draw black, bloom colour"), added on top of this pass by
+  `.agents/plans/color-pipeline-diagnosis-and-fix.md` (repo root), exists
+  to hide a symptom that was the paint bug. It is not settled and may be
+  unnecessary complexity.
+
+Re-validation is tracked in `.agents/planning/post-v1-roadmap-handoff.md`
+(repo root) → **W0.5 — Re-validate the colour findings**; it requires the
+device. §2A (canonical light-mode hex storage) and §2C (the `raw_log_fn`
+singleton) are unaffected by any of this, as is §4's eraser hardware
+finding.
+
 ---
 
 ### 2C — Input event logger: module-level singleton vs. per-instance

@@ -5,6 +5,53 @@ investigation continues in `.agents/plans/grayscale-ink-and-eraser-handoff.md`
 (key finding: all gates pass and Screen.bb is BBRGB32, so the grayscale
 conversion is plugin-side, not a KOReader gate).**
 
+> ## ⚠️ Correction (2026-07): every color symptom below was measured on grayscale pixels
+>
+> Until commit `9e7d8b1` (2026-07), `lib/canvas_utils.lua`'s `drawLine`
+> painted through `BlitBuffer:paintRect`, which unconditionally calls
+> `value:getColor8()` before writing any pixel — **even into a genuine
+> `TYPE_BBRGB32` buffer**. Every stroke and every self-test bar in this
+> plan was downconverted to luminance before the refresh layer ever saw
+> it, so ink was grayscale regardless of waveform, gate state, or buffer
+> type. (Different hues produce different luminance values, which is why
+> the self-test showed *distinguishable* gray shades rather than one flat
+> gray — that looked like partial color reaching the panel, and it was
+> not.) The fix switched `drawLine` and `_runColorSelfTest`'s bar loop to
+> `paintRectRGB32`.
+>
+> **This document is the sole written justification for
+> `live_ink_style = "solid"`, and that justification rests on the
+> artifact.** Specifically suspect:
+>
+> - **Root cause 3** — "A2 thresholds colored ink to sparse dots." A2 *is*
+>   1-bit (that much is confirmed and survives), but what it was
+>   thresholding was luminance-converted pixels, not colored ink. The
+>   observed faint dotted line is not evidence about how A2 renders color.
+> - **Task C2** in full — `live_ink_style`, the "draw black, bloom color"
+>   design, its `"solid"` default, `canvas_utils.live_ink_mode()`, the
+>   `_display_diverged` flag, and the tighten-time
+>   `_rebuildDisplayFromStrokes()` call. All of it exists to hide a
+>   symptom that may no longer exist. Do not treat the default as settled.
+> - **Phase D steps 3, 4 and 5** — "bars gray → KOReader gate broken",
+>   "still no color on the refresh", "muted live color". Each of those
+>   outcomes was guaranteed by the paint bug, so the decision tree would
+>   have sent a reader chasing gates that were fine. The steps are still
+>   worth running; their *interpretations* need re-deriving post-fix.
+>
+> **What survives untouched** — real, independently caused, and never the
+> reason color was missing: root cause 1 (stale deployment, confirmed from
+> git history), root cause 2's underlying mechanism (the color gate chain
+> and the 8bpp/CFA trap are real KOReader behavior), all of Task C1's
+> tooling and gate logging, the C1 deviation note on
+> `Screen:getHWNightmode()`, Task C3's two review findings, and every
+> timing result — the ~300–500 ms per-segment GLRC16 cost and the
+> mid-stroke pen lockout included.
+>
+> Re-validation is tracked in `.agents/planning/post-v1-roadmap-handoff.md`
+> → **W0.5 — Re-validate the colour findings**. None of it can be settled
+> off-device. Nothing below has been deleted: it is the record of what was
+> tried, and the retraction trail is why the next person won't repeat it.
+
 ## What prompted this (device report, 2026-07)
 
 On hardware (Kobo Libra Colour), drawing in light mode produces a **very
@@ -44,6 +91,16 @@ Three stacked causes, in order of certainty:
    live (solid color only appearing on the tighten). That's physics, but
    it's bad UX. Task C2 gives live strokes a solid appearance the way the
    stock Kobo notebook does.
+
+   > **⚠️ Correction (2026-07) — this is the cause that did not survive.**
+   > Until commit `9e7d8b1`, `canvas_utils.drawLine` painted via
+   > `BlitBuffer:paintRect`, which calls `value:getColor8()` before writing
+   > any pixel even into an RGB32 buffer — so what A2 was thresholding was
+   > already luminance, never color. A2's 1-bit behavior is real and
+   > stands; "A2 thresholds *colored* ink to sparse dots" was never
+   > actually observed and remains unproven. Task C2 below is built
+   > entirely on this premise. Re-validation: W0.5 in
+   > `.agents/planning/post-v1-roadmap-handoff.md`.
 
 ## Required reading before touching code
 
@@ -148,6 +205,24 @@ Goal: match the stock Kobo notebook's behavior — live strokes appear as
 **solid near-black ink** regardless of chosen color; the tighten pass then
 reveals the true color.
 
+> **⚠️ Correction (2026-07): the symptom this task works around was an
+> artifact, so the whole task is suspect — but it shipped and is still the
+> live default.** Until commit `9e7d8b1`, `canvas_utils.drawLine` painted
+> through `BlitBuffer:paintRect`, which calls `value:getColor8()` before
+> writing any pixel even into an RGB32 buffer. Live ink was therefore
+> grayscale before A2 ever touched it, so "colored ink looks faint and
+> dotted live" describes the paint bug, not A2. Everything below —
+> `live_ink_style` and its `"solid"` default, `canvas_utils.live_ink_mode()`
+> (including its `tighten_enabled` parameter), the `_display_diverged`
+> flag, `_rebuildDisplayFromStrokes()` in the tighten closure, the
+> `spec/canvas_utils_spec.lua` `live_ink_mode` block, and the symptom prose
+> in `fastnote.conf.example` — exists to serve that premise, and lives or
+> dies as one unit. Nothing here has been reverted; it is correct as
+> *implemented*, just possibly unnecessary. Whether it is still needed is
+> W0.5's highest-value question in
+> `.agents/planning/post-v1-roadmap-handoff.md` — device-only, do not
+> settle it by reading code.
+
 Design:
 
 - New config key `live_ink_style` in `lib/config.lua` (+ conf example):
@@ -238,6 +313,29 @@ mode, not the input path.
 ---
 
 ## Phase D — on-device decision tree (maintainer; cannot be done here)
+
+> **⚠️ Correction (2026-07): this decision tree was written before the
+> paint bug was known, and its color branches lead nowhere.** Until commit
+> `9e7d8b1`, `canvas_utils.drawLine` and `_runColorSelfTest`'s bar loop
+> both painted through `BlitBuffer:paintRect`, which calls
+> `value:getColor8()` before writing any pixel even into an RGB32 buffer —
+> so no color could reach the panel by any route. Concretely, in the steps
+> below:
+>
+> - **Step 3** — the self-test bars were *always* going to be gray, so
+>   "bars gray → KOReader-level gate still broken" is a guaranteed false
+>   positive. It would have sent the maintainer back to step 2 to recheck a
+>   color-rendering gate that was already fine.
+> - **Step 4** — "solid black live but still no color on the refresh" was
+>   the certain outcome, and it is not evidence about
+>   `isColorEnabled`/`hw_dithering`/Kaleido.
+> - **Step 5** — "muted live color" from `live_color_refresh` was measured
+>   under the same artifact.
+>
+> Steps 1 and 2 are still correct and worth doing (stale deployment and the
+> 8bpp/CFA trap are both real). Run the tree again post-fix rather than
+> trusting any result recorded against it; re-validation is tracked at
+> `.agents/planning/post-v1-roadmap-handoff.md` → W0.5.
 
 1. **Fix the deployment first**: merge the current branch into `master`
    (PR base = `master` — PR #12's mistake was base =

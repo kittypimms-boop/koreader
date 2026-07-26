@@ -6,6 +6,42 @@ Two independent workstreams derived from the pencil.koplugin review
 (`.agents/planning/pencil-koplugin-research.md`). Execute A before B —
 both touch `fastnote.conf.example` and `main.lua`.
 
+> ## ⚠️ Correction (2026-07): Workstream A's color premise was an artifact
+>
+> Until commit `9e7d8b1` (2026-07), `lib/canvas_utils.lua`'s `drawLine`
+> painted through `BlitBuffer:paintRect`, which unconditionally calls
+> `value:getColor8()` before writing any pixel — **even into a genuine
+> `TYPE_BBRGB32` buffer**. Every stroke was downconverted to luminance
+> before the refresh layer ever saw it, so no color reached the panel by
+> any route, under any waveform. The fix switched `drawLine` to
+> `paintRectRGB32`. Two things in this plan rest on the old premise:
+>
+> - **The A2 rationale.** Section A2 exists because A2-live drawing showed
+>   no color, and "A. NOT in scope" keeps A2-live as the default *until the
+>   device matrix passes*. A2 being a 1-bit waveform is real and confirmed
+>   — that part stands. What is not established is how A2 renders genuine
+>   RGB ink, because genuine RGB ink was never sent to it. `live_color_refresh`
+>   may be solving a problem that no longer exists, and its `false` default
+>   may now be the wrong one for the opposite reason to the one recorded here.
+> - **The "flip the default if it passes the matrix" checklist step**
+>   (post-merge checklist item 3, below). The
+>   `.github/skills/waveform-experimentation/SKILL.md` matrix has a
+>   "missing color" failure mode; that criterion was **unrunnable** at the
+>   time this plan was written and executed, because color was missing
+>   unconditionally. Any matrix run recorded before `9e7d8b1` proves
+>   nothing about color, only about timing and chunking.
+>
+> **Unaffected, do not re-litigate:** all of Workstream B (the eraser
+> tool-latch bug, `BTN_STYLUS2`/`eraser_button`, the order-independent
+> level latch), the `and/or` config merge bug, the `develop_*` → `tighten_*`
+> key rename, `union_rect`, and both review-pass defects (the `had_stroke`
+> flush gate and the stale `_live_pending_rect` after rotation). None of
+> those depend on what color reached the buffer. Timing findings — the
+> per-segment cost and the mid-stroke pen lockout — also stand.
+>
+> Re-validation is tracked in `.agents/planning/post-v1-roadmap-handoff.md`
+> → **W0.5 — Re-validate the colour findings**; it needs the device.
+
 ---
 
 ## Required reading before touching code
@@ -226,3 +262,13 @@ supervising session:
 3. If live color passes the matrix: consider flipping the default and
    updating the waveform note's design table (that's a new decision — ADR
    or note update at that point, not now).
+
+   > **⚠️ Correction (2026-07): this step's color criteria could not run as
+   > written.** Until commit `9e7d8b1`, `canvas_utils.drawLine` painted via
+   > `BlitBuffer:paintRect`, which calls `value:getColor8()` before writing
+   > any pixel even into an RGB32 buffer — so the matrix's "missing color"
+   > check failed unconditionally, for every flag setting, and "live color
+   > passes the matrix" was unreachable. Discard any pre-`9e7d8b1` matrix
+   > result on the color rows (timing and chunking rows are still valid)
+   > and re-run both passes on the fix. Tracked as W0.5 in
+   > `.agents/planning/post-v1-roadmap-handoff.md`.
