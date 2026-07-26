@@ -166,6 +166,43 @@ longer exists. Background: the banner at the top of
    expect the delay to survive. What may change is how much work the pass
    still has to do.
 
+**Code that exists only to serve `live_ink_style = "solid"`** — audit it as
+one unit, since it all lives or dies together:
+
+- `lib/config.lua` — the `live_ink_style` key and its default.
+- `lib/canvas_utils.lua` — `live_ink_mode()`, including its
+  `tighten_enabled` parameter (added purely so disabling the tighten pass
+  couldn't strand solid ink).
+- `spec/canvas_utils_spec.lua` — the `live_ink_mode` describe block.
+- `drawingcanvas.lua` — the `_display_diverged` flag and the
+  `_rebuildDisplayFromStrokes()` call inside the tighten closure, which
+  exist to repaint true colour over the solid ink before refreshing.
+- `fastnote.conf.example` — the symptom prose for both `live_ink_style`
+  and `live_color_refresh` ("faint / dotted while actively drawing",
+  "instead of grayscale") describes the artifact.
+
+**One fix to re-examine rather than trust:** "Fix E" in
+`.agents/plans/color-drawing-fix-and-menu-access.md` set
+`self.dithered = has_color_hw` and is marked DONE as the fix for "colour not
+appearing on the tighten refresh." Colour could not have appeared either
+way at that point, so **the fix was never validated against the symptom it
+claims to fix.** Keep the line — `widget.dithered` is genuinely required for
+dither promotion, per source — but don't cite Fix E as evidence for
+anything.
+
+**Docs still carrying uncorrected artifact-era claims** (the research note,
+the grayscale handoff and the WFM runbook are already corrected — don't
+double-correct those):
+
+- `.agents/plans/color-pipeline-diagnosis-and-fix.md` — root cause 3, Task
+  C2, Phase D. This is the sole written justification for solid ink.
+- `.agents/plans/color-drawing-fix-and-menu-access.md` — Fix E, above.
+- `.agents/plans/live-color-refresh-and-eraser-hardening.md` — the A2
+  rationale and the "flip the default if it passes the matrix" checklist
+  step, whose colour criteria were unrunnable at the time.
+- `plugins/fastnote.koplugin/.agents/ADRs/adr-006-stage12-color-develop.md`
+  — add to **Consequences** only; ADR Decision text is a historical record.
+
 **What NOT to re-test** — real, and never the cause of the colour gap: the
 device waveform map, the `"partial"` → full-flash promotion after
 `FULL_REFRESH_COUNT`, the gate chain, A2's 1-bit behaviour, the DU/32bpp
@@ -176,6 +213,29 @@ Use the on-device matrix in
 sections of the research note in place as you go — don't delete them,
 they're the record of what was tried, and the retraction trail is why the
 next person won't repeat it.
+
+---
+
+## W0.6 — `avoid_flashing_ui` silently downgrades the tighten refresh
+
+**Open, source-confirmed, unresolved.** Not artifact-related — this one is
+read straight from KOReader's source and has never been acted on.
+
+`frontend/ui/uimanager.lua` (~1137, 1144–1147): when the user has
+`avoid_flashing_ui` set, a **regioned** `"partial"` refresh is silently
+downgraded to `"ui"`. The tighten pass is exactly that — a regioned
+`"partial"`+dither over the accumulated stroke bbox — and `"ui"` does not
+carry the dither promotion, so on any device with that setting on, **the
+tighten pass cannot produce colour at all.**
+
+Nobody has confirmed whether the setting is on for this user, which is the
+first thing to check. If it is, it's a second independent reason colour
+appeared broken, and it is still live today.
+
+Cheap to investigate, potentially embarrassing to leave: log the setting at
+init alongside the existing gate snapshot, and if it's on, either force the
+tighten refresh through a path that survives the downgrade or surface a
+warning. Full detail: `.agents/notes/waveform-refresh-research.md` L455–469.
 
 ---
 
