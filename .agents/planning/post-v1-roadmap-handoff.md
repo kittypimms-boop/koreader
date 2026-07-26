@@ -18,6 +18,11 @@ in this repo and when it can't).
 time of writing.** If something contradicts what you find, trust the code
 and correct this document.
 
+**Resuming mid-stream?** `.agents/plans/tidying-session-handoff.md` records
+what the last session changed, the decisions it settled, the immediate next
+actions, and the traps it hit. Read it before this file if you're picking up
+rather than starting fresh.
+
 ---
 
 ## Decisions already made by the user
