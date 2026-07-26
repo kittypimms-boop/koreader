@@ -1,6 +1,8 @@
 # Handoff: post-v1 roadmap for fastnote
 
-**Status: PLANNING / HANDOFF (2026-07). Not started.**
+**Status: IN PROGRESS (2026-07). W2 done; W1 half done; W0.5's doc half
+done. Everything requiring the device is untouched — see the per-workstream
+status lines.**
 **Audience: an agent picking this up cold, with no memory of the session
 that produced it.**
 
@@ -145,6 +147,17 @@ not an instructions file.
 
 ## W0.5 — Re-validate the colour findings
 
+**Status: the doc half is DONE (`1c50f79`) — all four docs below now carry
+correction banners, so nothing in the colour docs asserts an artifact-era
+claim unflagged. The re-testing half is untouched and needs the device.**
+
+**Already checked, so you don't repeat it:** `_runColorSelfTest`'s bar loop
+was switched to `paintRectRGB32` in the same commit as `drawLine`, so the
+self-test's on-screen interpretation legend ("bars gray → a KOReader-level
+gate is broken") is **valid today**. It was a guaranteed false positive at
+the time Phase D was run, which is why the banner flags it there — but the
+live code is correct and needs no change.
+
 **Small, do it early, and do it before trusting anything in the colour
 docs.** Not a feature — a correction pass.
 
@@ -246,6 +259,15 @@ warning. Full detail: `.agents/notes/waveform-refresh-research.md` L455–469.
 
 ## W1 — Finger-draw first-contact latency
 
+**Status: candidate 1 shipped (`221dc22`), unverified on device. Candidate 2
+— the fix that actually removes the wait — is open and needs hardware.**
+
+Candidate 1 back-fills the stroke to `ges.start_pos` via
+`canvas_utils.stroke_seed_point`, which suppresses the back-fill when the
+contact began outside the drawable area. That recovers the *discarded
+prefix* only: ink still appears just as late, now in the right place. Do not
+read the shipped fix as closing this workstream.
+
 Already analysed. **Do not re-derive it** — read
 `.agents/notes/finger-draw-input-latency.md`, which has the root cause, the
 "which input path is actually drawing" check to run first, and four ranked
@@ -261,6 +283,31 @@ Only additions since that note was written:
 ---
 
 ## W2 — Resume last notebook and page
+
+**Status: DONE (`d5393ca`), verified by spec, not yet exercised in the
+emulator.** Kept here because W3 and W4 build directly on it — the
+per-notebook `last_page` field below is what W4's recents row reads.
+
+Two things landed differently from the plan below, both deliberate:
+
+- **`Notebook:resolvePage` does not require the page's SVG file to exist.**
+  The plan said it should. `addPage` writes the metadata entry but not the
+  file, so a literal existence check bounces every newly created notebook
+  back to the loading menu — and the browser's open path runs the same
+  check, so it loops. The shipped check requires the notebook *directory*
+  to be readable and the index to resolve to a real page entry, which still
+  catches the moved/renamed/deleted cases the fallback rule exists for. A
+  missing SVG inside an intact notebook is a blank page, not a dead path.
+- **There were three copies of the restore logic, not two** — `_showBrowser`
+  had one the plan didn't account for. All three now call
+  `Library:resolveResume`.
+
+**One consequence worth knowing:** a notebook can reach zero pages via
+`deletePage`, and `resolvePage` returns nil for it. Such a notebook is
+un-openable — tapping it in the browser quietly re-renders the browser. That
+is correct under the fail-quietly rule, but it means an emptied notebook can
+only be deleted from the UI, never repaired. If that turns out to matter,
+the fix belongs in W4's loading-menu rebuild.
 
 **Goal:** reopening fastnote lands on the page you left.
 
