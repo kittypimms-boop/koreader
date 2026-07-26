@@ -2,12 +2,21 @@
 
 Applies to: `plugins/fastnote.koplugin/drawingcanvas.lua`
 (`onDrawStroke`, `onDrawStrokeEnd`, `_pollTouch`, the `ges_events.DrawStroke`
-registration), `plugins/fastnote.koplugin/input/touchdev.lua`
+registration), `plugins/fastnote.koplugin/input/touchdev.lua`,
+`plugins/fastnote.koplugin/lib/canvas_utils.lua` (`stroke_seed_point`)
 See also: `ADRs/ADR-003-dual-path-raw-evdev-plus-gesture-fallback.md`,
 `notes/input-path-architecture.md`
 
-**Status: open.** Reported on device; root cause below is analysis, not yet
-confirmed by an on-device trace. Do the "which path is drawing" check first.
+**Status: open — candidate 1 implemented, not verified on device.**
+The symptom has two independent halves (see "Root cause"): a *wait* caused by
+`PAN_THRESHOLD`, and a *discarded prefix* caused by seeding the stroke from
+`ges.pos`. Only the second is fixed. Ink still appears just as late as before
+— it now simply starts in the right place, with the opening of the stroke
+back-filled instead of thrown away. **Candidate 2 remains the real fix** and
+still needs on-device work. The root cause below is analysis, not yet
+confirmed by an on-device trace; do the "which path is drawing" check first —
+it decides whether any of this is even the path drawing finger strokes on
+this unit.
 
 ---
 
@@ -38,12 +47,17 @@ the contact is still a tap/hold candidate, so nothing is drawn.
 
 Then a second, independent loss: when the first pan finally arrives,
 `onDrawStroke` seeds the stroke from `ges.pos` — the position *after* the
-threshold was crossed. `ges.start_pos` is read, but only to detect that a new
-gesture began; it is never used as the stroke's first point. So the travel
-that the threshold consumed is discarded rather than back-filled.
+threshold was crossed. `ges.start_pos` was read, but only to detect that a
+new gesture began; it was never used as the stroke's first point. So the
+travel that the threshold consumed was discarded rather than back-filled.
 
-The delay and the discarded prefix compound: the user sees ink appear late
+The delay and the discarded prefix compound: the user saw ink appear late
 *and* starting in the wrong place.
+
+**This second loss is now fixed** (candidate 1 below) — `onDrawStroke` seeds
+`_stroke_x`/`_stroke_y` from `start_pos` via `canvas_utils.stroke_seed_point`.
+The first loss — the wait itself — is untouched and is still the whole reason
+this note is open.
 
 ## Which path is actually drawing — check this first
 
@@ -61,13 +75,36 @@ every finger stroke is recorded into `StrokeBuffer` twice.
 
 ## Candidate fixes, cheapest first
 
-1. **Back-fill from `ges.start_pos`.** Seed the stroke at `start_pos` instead
-   of the first pan position. Small, local, no core changes — recovers the
-   discarded prefix so the stroke has the right shape from touchdown. Does
-   not remove the wait: ink still appears late, just correctly.
-2. **Make raw touch the finger-draw path.** Get `TouchDev.find()` working on
-   the combo chip, then gate the gesture path off whenever `_touchdev` is
-   open. Removes both losses; needs the double-record guard above.
+1. **Back-fill from `ges.start_pos`. — IMPLEMENTED (not device-verified).**
+   Seed the stroke at `start_pos` instead of the first pan position. Small,
+   local, no core changes — recovers the discarded prefix so the stroke has
+   the right shape from touchdown. **Does not remove the wait: ink still
+   appears late, just correctly.**
+
+   The decision is `canvas_utils.stroke_seed_point(start_x, start_y, cur_x,
+   cur_y, chrome_h, canvas_w, canvas_h)` — pure, unit-tested in
+   `spec/canvas_utils_spec.lua`; `onDrawStroke` is a one-line call site that
+   assigns its two return values to `_stroke_x`/`_stroke_y` in the
+   new-gesture branch (where those were previously cleared to `nil`).
+
+   The rule it encodes: back-fill **only when the touch-down point is itself
+   inside the drawable area** — `x` in `[0, canvas_w)`, `y` in `[chrome_h,
+   canvas_h)`, the same half-open convention as `point_in_zone`. Otherwise
+   fall back to `ges.pos`, i.e. the old behavior. Blind back-filling would
+   reintroduce Bug 1 from `.agents/plans/post-color-fix-followups.md`: a
+   contact starting on the chrome strip and panning down into the page would
+   draw a line out of the toolbar. `onDrawStroke`'s existing
+   `y < CHROME_HEIGHT` guard cannot catch that — it tests the *current*
+   position, which says nothing about where the contact began. The check
+   covers all four edges, not just the chrome one, because nothing
+   guarantees a pan's `start_pos` lies inside the widget (the pan zone is
+   matched on the current position) and an off-canvas start is equally wrong
+   to draw from whichever side it came in on.
+2. **Make raw touch the finger-draw path. — still the real fix; needs the
+   device.** Get `TouchDev.find()` working on the combo chip, then gate the
+   gesture path off whenever `_touchdev` is open. Removes both losses,
+   including the wait that candidate 1 leaves in place; needs the
+   double-record guard above.
 3. **Lower `PAN_THRESHOLD` for the canvas.** `GestureDetector` has no
    per-widget override, so this means patching core, and it would degrade
    tap/hold discrimination inside the canvas. Last resort.
@@ -76,7 +113,10 @@ every finger stroke is recorded into `StrokeBuffer` twice.
 
 ## Where to check when touching this area
 
-- `onDrawStroke` — the `ges.start_pos` / `self._stroke_x` seeding block.
+- `onDrawStroke` — the `ges.start_pos` / `self._stroke_x` seeding block, and
+  `canvas_utils.stroke_seed_point`, which holds the seeding rule. Changing
+  the chrome-strip guard means changing both: the widget guard covers the
+  current position, the helper covers the start position.
 - The `ges_events.DrawStroke` / `DrawStrokeEnd` registration in `init`.
 - `_pollTouch`'s `"down"` branch and its `self.finger_draw` guard.
 - `input/touchdev.lua` `TouchDev.find()` — its `ABS=` bitmask parsing.

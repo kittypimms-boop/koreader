@@ -88,9 +88,11 @@ breakdown of what each stage covers, see
 `.agents/planning/fastnote-dev-plan-v2.md` (a design doc — it carries no
 per-stage status markers; this section is where status lives).
 
-**Known open issue, and the next substantive piece of work:** finger drawing
-loses the first few millimetres of every contact, which breaks handwriting
-readability when lifting between words. The pen path is unaffected. See
+**Known open issue, partially fixed:** finger drawing registers late on each
+contact. The stroke no longer *starts in the wrong place* — it is back-filled
+to the real touch-down point — but ink still appears late, because the wait
+itself is KOReader's pan-classification threshold and is untouched. The pen
+path is unaffected. Unverified on device. See
 `.agents/notes/finger-draw-input-latency.md`.
 
 **Known hardware quirk:** the Elan combo chip handles pen and touch on the

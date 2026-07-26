@@ -986,8 +986,13 @@ function DrawingCanvas:onDrawStroke(_, ges)
     -- If the previous pan_release was missed, the old stroke is still open in the buffer
     -- and _stroke_x/y are stale.  Close and reset before starting the new stroke so we
     -- never draw a line from the previous gesture's last point to the new start point.
-    local gsx = ges.start_pos and math.floor(ges.start_pos.x) or x
-    local gsy = ges.start_pos and math.floor(ges.start_pos.y) or y
+    local start_x, start_y
+    if ges.start_pos then
+        start_x = math.floor(ges.start_pos.x)
+        start_y = math.floor(ges.start_pos.y)
+    end
+    local gsx = start_x or x
+    local gsy = start_y or y
     if gsx ~= self._ges_start_x or gsy ~= self._ges_start_y then
         if self._stroke_buf.current then
             self._stroke_buf:penUp()
@@ -996,7 +1001,16 @@ function DrawingCanvas:onDrawStroke(_, ges)
         -- New finger-down: cancel the tighten timer but keep the rect so
         -- new strokes union into the same bbox for a single color refresh.
         if self._tighten_fn then self:_cancelTightenTimer() end
-        self._stroke_x     = nil; self._stroke_y     = nil
+        -- Seed the stroke at the touch-down point, not at this first pan
+        -- position -- the pan only fires once PAN_THRESHOLD has been
+        -- travelled, so ges.pos has already lost the opening millimetres of
+        -- the contact. stroke_seed_point suppresses the back-fill when the
+        -- contact began outside the drawable area (chrome strip included),
+        -- which is what keeps the Bug 1 guard above intact; it falls back to
+        -- (x, y), i.e. today's behavior. See
+        -- .agents/notes/finger-draw-input-latency.md, candidate 1.
+        self._stroke_x, self._stroke_y = utils.stroke_seed_point(
+            start_x, start_y, x, y, CHROME_HEIGHT, self.dimen.w, self.dimen.h)
         self._stroke_min_x = nil; self._stroke_max_x = nil
         self._stroke_min_y = nil; self._stroke_max_y = nil
         self._ges_start_x  = gsx

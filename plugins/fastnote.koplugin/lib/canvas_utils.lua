@@ -248,4 +248,50 @@ function canvas_utils.should_block_forward_nav(prev_page_was_blank, current_page
     return prev_page_was_blank and current_page_is_blank
 end
 
+--- Decide where a new gesture-path stroke's first point goes: back-filled to
+-- the touch-down point, or left at the first reported pan position.
+--
+-- KOReader's GestureDetector does not classify a contact as a "pan" until it
+-- has travelled PAN_THRESHOLD from the initial touch event, so by the time
+-- onDrawStroke first fires, ges.pos is already several millimetres past
+-- where the finger actually landed. ges.start_pos still carries the real
+-- touch-down point, so seeding the stroke there recovers the prefix the
+-- threshold consumed and the stroke has the right shape from first contact.
+-- (This recovers the discarded prefix only -- the wait itself is unchanged;
+-- see .agents/notes/finger-draw-input-latency.md, candidate 1.)
+--
+-- Back-filling unconditionally would reintroduce a fixed bug: a contact that
+-- starts on the chrome strip and pans down into the page would draw a line
+-- out of the toolbar (post-color-fix-followups.md, Bug 1 -- the reason
+-- onDrawStroke's `y < CHROME_HEIGHT` guard exists). That guard tests the
+-- CURRENT position, which says nothing about where the contact began, so the
+-- start point needs its own check.
+--
+-- The check is the full drawable rect, not just the chrome edge: nothing
+-- guarantees a pan's start_pos lies inside the widget (the pan zone is
+-- matched on the current position), and an out-of-canvas start is equally
+-- wrong to draw from whichever side it came in on. Bounds are the same
+-- half-open convention as point_in_zone, so y == chrome_h is canvas -- it
+-- matches the widget guard's `y < CHROME_HEIGHT` exactly.
+--
+-- @param start_x  number|nil  gesture start x (nil when ges.start_pos absent)
+-- @param start_y  number|nil  gesture start y
+-- @param cur_x    number      current pan x (today's seed, and the fallback)
+-- @param cur_y    number      current pan y
+-- @param chrome_h number      chrome strip height in pixels
+-- @param canvas_w number      canvas width in pixels
+-- @param canvas_h number      canvas height in pixels
+-- @return number, number  seed x, seed y
+function canvas_utils.stroke_seed_point(start_x, start_y, cur_x, cur_y,
+                                        chrome_h, canvas_w, canvas_h)
+    if start_x == nil or start_y == nil then
+        return cur_x, cur_y
+    end
+    if not canvas_utils.point_in_zone(start_x, start_y,
+                                      0, chrome_h, canvas_w, canvas_h - chrome_h) then
+        return cur_x, cur_y
+    end
+    return start_x, start_y
+end
+
 return canvas_utils

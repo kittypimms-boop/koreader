@@ -381,5 +381,107 @@ describe("canvas_utils", function()
 
     end)
 
+    -- ── stroke seeding ────────────────────────────────────────────────────
+
+    describe("stroke_seed_point", function()
+        -- KOReader only reports a "pan" once the contact has travelled
+        -- PAN_THRESHOLD, so the first pan's ges.pos is already millimetres
+        -- past where the finger actually landed. Seeding from ges.start_pos
+        -- back-fills that discarded prefix -- but only when start_pos is
+        -- itself a legitimate canvas point, otherwise a contact that begins
+        -- on the chrome strip and pans down would draw a line out of the
+        -- toolbar into the page (Bug 1, post-color-fix-followups.md).
+        -- See .agents/notes/finger-draw-input-latency.md, candidate 1.
+
+        local CHROME_H = 75
+        local CANVAS_W = 1264
+        local CANVAS_H = 1680
+
+        it("back-fills to the gesture start when the start is inside the canvas", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                100, 200, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(100, seed_x)
+            assert.are.equal(200, seed_y)
+        end)
+
+        it("falls back to the current position when the start is in the chrome strip", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                100, 10, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("treats a start exactly at the chrome boundary as canvas (matches y < CHROME_HEIGHT)", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                100, CHROME_H, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(100, seed_x)
+            assert.are.equal(CHROME_H, seed_y)
+        end)
+
+        it("falls back to the current position when start_pos is missing entirely", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                nil, nil, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("falls back to the current position when only one start coordinate is present", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                100, nil, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+
+            seed_x, seed_y = utils.stroke_seed_point(
+                nil, 200, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("returns that one point when the start equals the current position", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                130, 240, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("falls back for a start off the left edge", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                -5, 200, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("falls back for a start off the right edge", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                CANVAS_W, 200, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("falls back for a start below the bottom edge", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                100, CANVAS_H, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(130, seed_x)
+            assert.are.equal(240, seed_y)
+        end)
+
+        it("accepts a start at x = 0 (left edge is inside the canvas)", function()
+            local seed_x, seed_y = utils.stroke_seed_point(
+                0, 200, 130, 240, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(0, seed_x)
+            assert.are.equal(200, seed_y)
+        end)
+
+        it("back-fills upward when the finger panned up from a lower start", function()
+            -- Direction-agnostic: the threshold is crossed the same way in
+            -- every direction, so an upward pan must recover its prefix too.
+            local seed_x, seed_y = utils.stroke_seed_point(
+                400, 900, 380, 840, CHROME_H, CANVAS_W, CANVAS_H)
+            assert.are.equal(400, seed_x)
+            assert.are.equal(900, seed_y)
+        end)
+
+    end)
+
 end)
 
