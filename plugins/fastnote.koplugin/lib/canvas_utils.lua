@@ -10,6 +10,11 @@ No KOReader dependencies — fully unit-testable with busted.
 
 local canvas_utils = {}
 
+-- Canonical black ink, as stored by PALETTE and in the SVG metadata block.
+-- Black never benefits from the live-colour refresh path (see
+-- live_color_applies), so it is named rather than repeated as a literal.
+local BLACK_INK_HEX = "#000000"
+
 --- Compute the bounding rect that must be marked dirty after drawing a line
 -- segment from (x1,y1) to (x2,y2) with a brush of the given width.
 -- The rect is padded by half the brush width on every side so the full
@@ -190,26 +195,36 @@ function canvas_utils.selftest_layout(screen_w, screen_h, chrome_h, bar_count,
     return { x = x, y = y, w = w, h = h }
 end
 
---- Decide whether selecting an ink color should turn on the
--- live_color_refresh experiment (Ask 3 -- see
--- .agents/plans/post-color-fix-followups.md). Picking any color other
--- than black enables it, so live ink previews at its true hue while
--- drawing; picking black, or being in dark mode, disables it -- neither
--- ever needs it: black-only ink has nothing for live_color_refresh to
--- preview, and dark-mode ink is always shown solid white/black
--- regardless of the flag (see _strokeColor / the stroke-color-invariant
--- note) until switching back to light mode.
+--- Decide whether the live_color_refresh path has anything to show for the
+-- ink that is selected right now.
 --
--- This only decides the AUTOMATIC response to a color pick or a dark-
--- mode toggle -- the hamburger menu's manual live_color_refresh toggle
--- still works afterward as an explicit override.
+-- Live colour costs latency: it drives a direct Screen:refreshUI per
+-- throttle tick instead of the cheaper per-segment "a2" refresh, so the
+-- pen/finger feels less responsive while it is engaged. Two cases pay that
+-- cost for nothing and are therefore gated out here:
+--
+--   1. Black ink -- there is no hue for the live pass to preview; the "a2"
+--      path already draws black correctly.
+--   2. Dark mode -- ink is always shown solid white/black regardless of
+--      this flag (see _strokeColor / the stroke-color-invariant note), so
+--      the live pass changes nothing on screen.
+--
+-- This is a GATE, not a state mutation: the user's live_color_refresh
+-- preference (config default plus the hamburger-menu toggle) is never
+-- overwritten by a colour pick or a dark-mode toggle, only ignored while
+-- it would do nothing. That is what lets the preference survive a
+-- black-ink detour -- switch black -> red and live colour is back on,
+-- with no remembered extra state and no menu round trip.
+--
+-- Callers combine this with the hardware/input-path gates; see
+-- DrawingCanvas:_useLiveColorRefresh.
 --
 -- @param hex        string   canonical #rrggbb ink color, e.g. from PALETTE
 -- @param dark_mode  boolean
 -- @return boolean
-function canvas_utils.auto_live_color_refresh(hex, dark_mode)
+function canvas_utils.live_color_applies(hex, dark_mode)
     if dark_mode then return false end
-    if hex == "#000000" then return false end
+    if hex == BLACK_INK_HEX then return false end
     return true
 end
 
@@ -231,6 +246,52 @@ end
 -- @return boolean
 function canvas_utils.should_block_forward_nav(prev_page_was_blank, current_page_is_blank)
     return prev_page_was_blank and current_page_is_blank
+end
+
+--- Decide where a new gesture-path stroke's first point goes: back-filled to
+-- the touch-down point, or left at the first reported pan position.
+--
+-- KOReader's GestureDetector does not classify a contact as a "pan" until it
+-- has travelled PAN_THRESHOLD from the initial touch event, so by the time
+-- onDrawStroke first fires, ges.pos is already several millimetres past
+-- where the finger actually landed. ges.start_pos still carries the real
+-- touch-down point, so seeding the stroke there recovers the prefix the
+-- threshold consumed and the stroke has the right shape from first contact.
+-- (This recovers the discarded prefix only -- the wait itself is unchanged;
+-- see .agents/notes/finger-draw-input-latency.md, candidate 1.)
+--
+-- Back-filling unconditionally would reintroduce a fixed bug: a contact that
+-- starts on the chrome strip and pans down into the page would draw a line
+-- out of the toolbar (post-color-fix-followups.md, Bug 1 -- the reason
+-- onDrawStroke's `y < CHROME_HEIGHT` guard exists). That guard tests the
+-- CURRENT position, which says nothing about where the contact began, so the
+-- start point needs its own check.
+--
+-- The check is the full drawable rect, not just the chrome edge: nothing
+-- guarantees a pan's start_pos lies inside the widget (the pan zone is
+-- matched on the current position), and an out-of-canvas start is equally
+-- wrong to draw from whichever side it came in on. Bounds are the same
+-- half-open convention as point_in_zone, so y == chrome_h is canvas -- it
+-- matches the widget guard's `y < CHROME_HEIGHT` exactly.
+--
+-- @param start_x  number|nil  gesture start x (nil when ges.start_pos absent)
+-- @param start_y  number|nil  gesture start y
+-- @param cur_x    number      current pan x (today's seed, and the fallback)
+-- @param cur_y    number      current pan y
+-- @param chrome_h number      chrome strip height in pixels
+-- @param canvas_w number      canvas width in pixels
+-- @param canvas_h number      canvas height in pixels
+-- @return number, number  seed x, seed y
+function canvas_utils.stroke_seed_point(start_x, start_y, cur_x, cur_y,
+                                        chrome_h, canvas_w, canvas_h)
+    if start_x == nil or start_y == nil then
+        return cur_x, cur_y
+    end
+    if not canvas_utils.point_in_zone(start_x, start_y,
+                                      0, chrome_h, canvas_w, canvas_h - chrome_h) then
+        return cur_x, cur_y
+    end
+    return start_x, start_y
 end
 
 return canvas_utils

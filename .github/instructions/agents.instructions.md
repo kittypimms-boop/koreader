@@ -41,8 +41,40 @@ only that one file, with no other context, can act on it correctly.
 Ask this in order — stop at the first match:
 
 1. **"Where is X handled?" (a location, not an explanation)**
-   → One line in AGENTS.md's File Map or Architecture section. No
-   elaboration beyond a 3-8 word description.
+   → A navigation hint, written at an altitude that survives a refactor:
+   name the directory and the symbol to grep for, not the exact path.
+   "Pen events: `input/pendev.lua` feeds `lib/pen_statemachine.lua` — grep
+   `_pollPen`" ages well; "`drawingcanvas.lua` line 1740" is stale by the
+   end of the session.
+
+   **Do not write a file-by-file map.** A listing of every file with a
+   description of each is the single most drift-prone thing an AGENTS.md can
+   contain: it re-states what `ls` already shows, and every rename, split,
+   or new module silently falsifies it. This repo has shipped phantom
+   entries (`ui/colorpicker.lua`, `ui/chrome.lua`, `input/buttondev.lua`, a
+   `state.lua`) that were listed as real files while the functionality lived
+   inline elsewhere — and, more recently, a config-key list that lost a key.
+   Both were the map going stale, not an author being careless.
+
+   Anthropic's own guidance agrees: "file-by-file descriptions of the
+   codebase" is on the exclude list for context files, and `/doctor`'s trim
+   check strips directory layouts and architecture overviews on the grounds
+   that Claude can derive them from the code, keeping "pitfalls, rationale,
+   and conventions that differ from tool defaults."
+
+   What survives the cut, and belongs in AGENTS.md: the **negative space**
+   ("there is no `ui/colorpicker.lua`; that's inline in
+   `drawingcanvas.lua`"), directory *roles* rather than file inventories,
+   and invariants. Anything longer than that goes in a `notes/` topic file
+   and gets a Topics-table row — `notes/code-layout.md` is the worked
+   example.
+
+   **Discoverability test, for any listing you're still tempted to write:**
+   a single cheap `ls` already proves a file exists, so existence alone
+   earns no line. Every entry must carry something the listing wouldn't
+   show — a contract, a constraint, or a non-obvious relationship to
+   another file. If most entries would be self-evident from their names,
+   replace the whole list with one sentence naming the entry point.
 
 2. **A settled architectural decision — this approach over that, and why**
    → New ADR: `.agents/ADRs/ADR-NNN-slug.md`.
@@ -54,13 +86,35 @@ Ask this in order — stop at the first match:
 
 4. **A multi-step plan, phase breakdown, or research writeup for upcoming
    or in-progress work**
-   → `.agents/planning/` (design docs, research) or `.agents/plans/`
-   (chunk-level implementation plans with a Status line). Not linked from
-   AGENTS.md's Topics table unless it's a primary reference like the dev
-   plan — most planning docs are found by scanning the directory, not
-   indexed individually.
+   → `.agents/planning/` (design docs, research, roadmaps) or
+   `.agents/plans/` (chunk-level implementation plans and handoffs, each
+   opening with a `**Status:**` line). Not linked from AGENTS.md's Topics
+   table unless it's a primary reference like the dev plan — most planning
+   docs are found by scanning the directory, not indexed individually.
 
-5. **A convention that applies repo-wide, not scoped to `.agents/` or one
+   > **`planning/` vs `plans/` is a genuinely confusing pair of names.**
+   > The distinction is scope and lifecycle, not subject: `planning/` holds
+   > durable documents about *what we're building and why* (the dev plan,
+   > research writeups, the post-v1 roadmap); `plans/` holds a record of
+   > *how one specific chunk of work got done*, and every file there carries
+   > a Status line. If you're unsure, ask whether the document will still be
+   > read a year from now for its content (`planning/`) or only as history
+   > (`plans/`).
+
+5. **Ephemeral working notes for the session you're in right now**
+   → `.agents/scratch/` — gitignored, free-form, no conventions. Dead ends
+   explored, half-formed theories, output you're mid-way through reading.
+   Write here freely rather than littering the repo root or, worse, adding
+   half-finished thinking to a tracked file.
+
+   Everything else in `.agents/` is tracked and reviewed; `scratch/` is the
+   one place that isn't. When a scratch note turns out to be durable,
+   promote it: a gotcha becomes a `notes/` topic, a settled choice becomes
+   an ADR, an unfinished piece of work becomes a `plans/` handoff with a
+   Status line. Don't leave durable findings in `scratch/` — nobody else
+   will ever see them.
+
+6. **A convention that applies repo-wide, not scoped to `.agents/` or one
    feature area**
    → mindset/conventions go in a sibling `.github/instructions/<topic>.instructions.md`
    (applies automatically via `applyTo`, same mechanism as this file);
@@ -70,7 +124,7 @@ Ask this in order — stop at the first match:
    example of that split — mirror it rather than mixing both kinds of
    content into one file.
 
-6. **Current status / stage completion**
+7. **Current status / stage completion**
    → One line in AGENTS.md's "Current State", pointing to the planning doc
    for the full breakdown. Never a full stage table or checklist in
    AGENTS.md itself — those go stale fast and belong in the planning doc,

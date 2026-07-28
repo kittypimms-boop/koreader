@@ -1,10 +1,16 @@
 --[[--
 FastNote entry point.
 
-Routing on open (Stage 9):
+Routing on open (Stage 9, resume added in W2):
   • 0 notebooks  → create "My Notebook", open canvas directly (first launch)
   • 1 notebook   → open canvas directly (skip browser)
-  • 2+ notebooks → show notebook browser
+  • 2+ notebooks → resume the last-used notebook + page if it still resolves,
+                   otherwise show the notebook browser
+
+Fallback rule: whenever a notebook or page fails to resolve — moved, renamed,
+deleted, or simply stale — fall back to the browser, quietly. Never open a
+canvas at a dead path and never surface a traceback. The single validation
+point is Library:resolveResume; every open path goes through it.
 --]]--
 
 local Dispatcher      = require("dispatcher")  -- luacheck:ignore
@@ -38,6 +44,22 @@ function FastNote:addToMainMenu(menu_items)
         sorting_hint = "more_tools",
         callback     = function() self:onOpenFnoteCanvas() end,
     }
+end
+
+-- ---------------------------------------------------------------------------
+-- Internal: remember where the user is
+-- ---------------------------------------------------------------------------
+
+--- Persist the current position, per notebook and app-wide.
+-- nb.last_page is the authoritative field (it travels with the notebook
+-- directory and works for any number of notebooks). state.last_notebook_uuid /
+-- state.last_page_index are still written during the transition so a downgrade
+-- doesn't lose the user's place.
+local function _rememberPosition(lib, state, nb, page_idx)
+    nb:setLastPage(page_idx)          -- also flushes notebook.lua
+    state.last_notebook_uuid = nb.uuid
+    state.last_page_index    = page_idx
+    lib:writeState(state)
 end
 
 -- ---------------------------------------------------------------------------
@@ -75,11 +97,8 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
         debug_input_log     = cfg.debug_input_log,
 
         on_save_callback = function(path)
-            nb.last_edited           = os.time()
-            nb:save()
-            state.last_notebook_uuid = nb.uuid
-            state.last_page_index    = page_idx
-            lib:writeState(state)
+            nb.last_edited = os.time()
+            _rememberPosition(lib, state, nb, page_idx)
         end,
 
         on_dark_mode_change = function(dm)
@@ -108,9 +127,7 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
             end
             page_idx = math.min(page_idx, nb:pageCount())
             local path = nb:pagePath(page_idx)
-            state.last_notebook_uuid = nb.uuid
-            state.last_page_index    = page_idx
-            lib:writeState(state)
+            _rememberPosition(lib, state, nb, page_idx)
             return page_idx, nb:pageCount(), path
         end,
 
@@ -118,9 +135,7 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
             if page_idx <= 1 then return nil end
             page_idx = page_idx - 1
             local path = nb:pagePath(page_idx)
-            state.last_notebook_uuid = nb.uuid
-            state.last_page_index    = page_idx
-            lib:writeState(state)
+            _rememberPosition(lib, state, nb, page_idx)
             return page_idx, nb:pageCount(), path
         end,
 
@@ -129,12 +144,9 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
         -- SpinWidget caller already clamps its value to [1, page_count],
         -- this is a defensive second clamp).
         on_page_jump = function(idx)
-            idx = math.max(1, math.min(idx, nb:pageCount()))
-            page_idx = idx
+            page_idx = nb:clampPage(idx)
             local path = nb:pagePath(page_idx)
-            state.last_notebook_uuid = nb.uuid
-            state.last_page_index    = page_idx
-            lib:writeState(state)
+            _rememberPosition(lib, state, nb, page_idx)
             return page_idx, nb:pageCount(), path
         end,
     })
@@ -147,13 +159,31 @@ end
 function FastNote:_showBrowser(lib, state)
     local Browser = require("ui/browser")
     Browser.show(lib, function(nb)
-        local page_idx = 1
-        if state.last_notebook_uuid == nb.uuid then
-            page_idx = state.last_page_index or 1
-        end
-        page_idx = math.max(1, math.min(page_idx, nb:pageCount()))
-        self:_openCanvas(lib, state, nb, page_idx)
+        -- Same validation as the launch path: a row in the browser can hold a
+        -- stale reference too (deleted on another device, folder moved).
+        self:_resumeOrBrowse(lib, state, nb.uuid)
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Internal: open a notebook if it still resolves, else fall back to the browser
+-- ---------------------------------------------------------------------------
+
+--- Resume into uuid (or the last-used notebook when uuid is nil).
+-- Returns true when a canvas was opened, false when the browser was shown
+-- instead. This is the only place the fallback rule is applied.
+function FastNote:_resumeOrBrowse(lib, state, uuid)
+    local nb, page_idx = lib:resolveResume(state, uuid)
+    if nb then
+        self:_openCanvas(lib, state, nb, page_idx)
+        return true
+    end
+
+    local logger = require("logger")
+    logger.info("FastNote: cannot resolve notebook", tostring(uuid or state.last_notebook_uuid),
+                "- falling back to the browser")
+    self:_showBrowser(lib, state)
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -179,18 +209,13 @@ function FastNote:onOpenFnoteCanvas()
         self:_openCanvas(lib, state, nb, 1)
 
     elseif count == 1 then
-        -- Single notebook: skip browser.
-        local nb       = lib:byIndex(1)
-        local page_idx = 1
-        if state.last_notebook_uuid == nb.uuid then
-            page_idx = state.last_page_index or 1
-        end
-        page_idx = math.max(1, math.min(page_idx, nb:pageCount()))
-        self:_openCanvas(lib, state, nb, page_idx)
+        -- Single notebook: skip the browser, resume inside it.
+        self:_resumeOrBrowse(lib, state, lib:byIndex(1).uuid)
 
     else
-        -- Multiple notebooks: show browser.
-        self:_showBrowser(lib, state)
+        -- 2+ notebooks: resume the last-used one; the browser is the fallback
+        -- when nothing was stored or the stored notebook no longer resolves.
+        self:_resumeOrBrowse(lib, state, nil)
     end
 end
 

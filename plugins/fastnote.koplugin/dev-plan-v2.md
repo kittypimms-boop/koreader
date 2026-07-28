@@ -710,6 +710,22 @@ Anything worth doing only after the above is solid:
 
 ---
 
+### Stage 14 — Finger-draw input latency
+
+Added after the rest of the plugin reached daily-use quality. Finger
+strokes lose their opening millimetres before ink appears; the pen path is
+unaffected. This is the one open piece of substantive work.
+
+Root cause analysis and the ranked candidate fixes live in
+`.agents/notes/finger-draw-input-latency.md` (repo root) — not duplicated
+here.
+
+Note for OPEN QUESTION 6 below: latency work did become first-class, but
+scoped to the finger input path rather than the general
+smoothing-filter/direct-framebuffer side quest sketched there.
+
+---
+
 ## Palm rejection in depth
 
 Since you specifically asked about the i2c / embedded path, here's what's

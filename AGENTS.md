@@ -29,21 +29,23 @@ See `.agents/ADRs/ADR-007-direct-to-master-no-prs.md` for the reasoning.
 ## Where things live
 
 ```
+CLAUDE.md                    ← one-line `@AGENTS.md` import (this file is the source)
 plugins/fastnote.koplugin/   ← all active development; has its own AGENTS.md index
-  CLAUDE.md → AGENTS.md     ← symlink; Claude Code's lazy-load entry point for the plugin
+  CLAUDE.md                 ← same one-line import, for the plugin's AGENTS.md
 .agents/                     ← ADRs, planning, notes, superseded plans (repo root — see below)
 .github/
-  instructions/              ← facts/conventions (Copilot reads natively; Claude Code via .claude/rules symlink)
-  skills/agents-md-authoring/           ← workflow for AGENTS.md and .agents/ docs
-  skills/documentation-as-code/         ← keeping all docs in sync with code changes
-  skills/test-driven-development/       ← when to write the spec first in this repo, and when not to
-  skills/authoring-instructions-and-skills/  ← how to add new instructions/skills correctly
-  skills/waveform-experimentation/           ← on-device test matrix for E-ink refresh/waveform changes
+  instructions/              ← facts/conventions, auto-applied by path glob
+  skills/                    ← procedures, loaded on demand by description match
 .claude/
   skills → ../.github/skills         (Claude Code only — Copilot reads .github/skills/ directly)
   rules  → ../.github/instructions   (Claude Code only — Copilot reads .github/instructions/ directly)
 doc/                         ← upstream KOReader developer docs (not plugin-specific)
 ```
+
+Skills and instructions files are **not listed individually here** — both
+tools discover them automatically (by `description` match and by `applyTo`/
+`paths` glob respectively), so an inventory in this file would only go stale
+as they're added.
 
 `.agents/` is at the **repo root**, not inside the plugin directory, even
 though its contents (ADRs, planning, notes) are almost entirely about the

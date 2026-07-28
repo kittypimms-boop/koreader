@@ -33,6 +33,10 @@ touch in the same device node via MT protocol.
 All paths below are relative to the **repo root** (`.agents/` is not inside
 this plugin directory):
 
+- **`.agents/planning/post-v1-roadmap-handoff.md`** — what happens next:
+  six workstreams (emulator, finger latency, resume, thumbnails, folders,
+  hardware input, OCR), the decisions already settled, and sequencing.
+  Start here if you're picking up new work.
 - **`.agents/planning/fastnote-dev-plan-v2.md`** — canonical design doc:
   storage layout, coordinate translation formula, palm rejection algorithm,
   stage-by-stage build plan, open questions. Read before implementing
@@ -42,15 +46,31 @@ this plugin directory):
   Check before re-opening a question that's already been decided.
 - **`.agents/notes/`** — topic references for specific gotcha-prone areas
   of the code (see "Topics" table below).
-- **`.agents/plans/`** — chunk-level implementation plans, mostly historical.
-- **This plugin's own `.agents/planning/next-stages-plan.md`** — an older
-  phase plan; largely superseded, see the status banner at its top.
+- **`.agents/plans/`** — chunk-level implementation plans and handoffs,
+  mostly historical; each opens with a `**Status:**` line.
+- **`.agents/scratch/`** — gitignored. Your working notes for the session
+  you're in. Write here freely instead of leaving half-finished thinking in
+  a tracked file; promote anything durable before you finish.
+**A second, plugin-local `.agents/` also exists**, at
+`plugins/fastnote.koplugin/.agents/` — note the different root. It holds two
+files, both historical:
+
+- `planning/next-stages-plan.md` — an older phase plan, largely superseded;
+  read the status banner at its top before trusting any of it.
+- `ADRs/adr-006-stage12-color-develop.md` — **numbered ADR-006, but it is
+  not the repo-root ADR-006.** The root one is the UUID directory layout;
+  this one is Stage 12's colour model and deferred develop refresh. Two
+  unrelated decisions share a number across the two directories. Check
+  which root you're under before citing "ADR-006".
+
+New content goes in the **repo-root** `.agents/`, not this one.
 
 ---
 
 ## Workflow
 
-**No pull requests. Commit directly to `master` and push.**
+**No pull requests. Commit directly to `master` and push.** Why:
+`.agents/ADRs/ADR-007-direct-to-master-no-prs.md`.
 Local `busted spec/` is the test gate (run from this directory).
 The macOS CI workflow (`.github/workflows/build.yml`) is manual-trigger only.
 
@@ -58,11 +78,22 @@ The macOS CI workflow (`.github/workflows/build.yml`) is manual-trigger only.
 
 ## Current State
 
+**Feature complete for daily use; the work now is tidying, not building.**
 Core drawing, palm rejection, SVG persistence, notebook browser, eraser,
-undo/redo, dark mode, and the 6-color palette are all implemented and
-passing `busted spec/`. Remaining open item: Stage 13 (optional polish —
-thumbnails, PDF export), not started. For the full stage-by-stage status,
-see `.agents/planning/fastnote-dev-plan-v2.md`.
+undo/redo, dark mode, the 6-color palette, and live color ink are all
+implemented and passing `busted spec/`. Live color is confirmed working on
+device and no longer carries an "experimental" label. Stage 13 (optional
+polish — thumbnails, PDF export) remains unstarted. For the stage-by-stage
+breakdown of what each stage covers, see
+`.agents/planning/fastnote-dev-plan-v2.md` (a design doc — it carries no
+per-stage status markers; this section is where status lives).
+
+**Known open issue, partially fixed:** finger drawing registers late on each
+contact. The stroke no longer *starts in the wrong place* — it is back-filled
+to the real touch-down point — but ink still appears late, because the wait
+itself is KOReader's pan-classification threshold and is untouched. The pen
+path is unaffected. Unverified on device. See
+`.agents/notes/finger-draw-input-latency.md`.
 
 **Known hardware quirk:** the Elan combo chip handles pen and touch on the
 **same** device node (`event1`), not separate nodes as the original design
@@ -71,64 +102,28 @@ rejection is simply disabled.
 
 ---
 
-## File Map
+## Finding your way around
 
-```
-fastnote.koplugin/
-├── _meta.lua                  Plugin metadata — do not add logic here
-├── main.lua                   Entry point: config load, canvas open, notebook routing
-├── drawingcanvas.lua          Drawing canvas widget — ALL input, rendering, menu, orientation,
-│                              chrome strip, and quick-menu color picker (no separate files for these)
-├── fastnote.conf.example      Documented user config (finger_draw, rotation_mode, tighten_*, live_color_refresh, eraser_button, live_ink_style)
-├── lib/
-│   ├── canvas_utils.lua       Pure math: compute_dirty_rect, point_in_zone, pressure_to_width
-│   ├── config.lua             Pure Lua config loader, wired via main.lua's canvas-open path
-│   ├── input_codes.lua        Shared Linux input event constants (BTN_*/ABS_*, incl. BTN_STYLUS2)
-│   ├── eraser_button.lua      Pure translation: BTN_STYLUS/BTN_STYLUS2 event → eraser tool state
-│   ├── pen_statemachine.lua   Wacom evdev state machine → high-level pen events
-│   ├── json.lua               Pure Lua JSON encoder/decoder (no KOReader deps; busted-testable)
-│   ├── stroke.lua             Stroke object: points, hitTest, bbox, paintTo, toTable/fromTable
-│   ├── strokebuffer.lua       Stroke list, undo/redo stack, eraseAt, repaintTo, serialization
-│   ├── svg.lua                svg.write() + svg.read() with <metadata> JSON block
-│   └── palmreject.lua         Proximity-gated palm rejection state machine
-├── input/
-│   ├── pendev.lua             FFI: finds Wacom/Elan, opens fd, polls events → pen_statemachine
-│   └── touchdev.lua           FFI: MT protocol B reader for capacitive touch
-├── model/
-│   ├── notebook.lua           One notebook: ordered page list + metadata
-│   └── library.lua            All notebooks + app-wide state (last-used notebook/page)
-├── ui/
-│   └── browser.lua            Notebook list widget: list/create/rename/delete
-├── spec/                      One *_spec.lua per lib/model file above (busted, no KOReader runtime needed)
-└── dev-plan-v2.md             Convenience copy; canonical version in .agents/planning/ (repo root)
-```
+`ls` tells you what files exist; this section only points at the
+non-obvious. Directory roles:
 
-The `input/` modules use FFI and are not unit-testable — validate on device.
-Everything else under `spec/` runs headless.
+| Directory | Holds | Testable? |
+|---|---|---|
+| `lib/` | Pure Lua — no KOReader dependency, which is why it's unit-testable | `busted` |
+| `model/` | Notebook and library data model, plus app-wide persisted state | `busted` |
+| `input/` | FFI raw-evdev readers | **No** — device only |
+| `ui/` | Only the notebook browser; the rest of the UI is in `drawingcanvas.lua` | emulator |
 
----
+Two invariants that, if violated, reintroduce already-fixed bugs:
 
-## Architecture
+- **BlitBuffer is a display cache, never the source of truth** — StrokeBuffer
+  is authoritative (ADR-002).
+- **`use_raw_input = Device:isKobo()` picks gesture vs. raw evdev, and both
+  paths must keep working** (ADR-003).
 
-```
-main.lua
-    └── UIManager:show(DrawingCanvas)
-            └── drawingcanvas.lua (InputContainer)
-                    ├── BlitBuffer (display cache — rebuilt by replaying StrokeBuffer)
-                    ├── StrokeBuffer (source of truth for stroke data)
-                    ├── input/ (raw evdev on device)
-                    │       ├── pendev.lua    → pen_statemachine → {down/move/up/hover}
-                    │       └── touchdev.lua  → MT slot events
-                    └── lib/palmreject.lua → filters touch through pen-proximity gate
-```
-
-Two invariants that, if violated, reintroduce fixed bugs:
-
-- **BlitBuffer is a display cache, never the source of truth.** StrokeBuffer
-  is authoritative. See ADR-002.
-- **`use_raw_input = Device:isKobo()` selects gesture vs. raw-evdev input.**
-  Both paths must keep working. See ADR-003 and
-  `.agents/notes/input-path-architecture.md`.
+**For the data flow, the negative-space traps, and where each concern
+actually lives, load `.agents/notes/code-layout.md`** — that's the file to
+read before hunting for something in this directory.
 
 ---
 
@@ -138,6 +133,17 @@ Two invariants that, if violated, reintroduce fixed bugs:
 cd /path/to/koreader && ./kodev run        # SDL emulator — most work happens here
 cd plugins/fastnote.koplugin && busted spec/   # unit tests, ~2s
 ```
+
+**If `busted` is missing, install it from the distro, not LuaRocks:**
+`sudo apt install lua-busted` (Debian/Ubuntu). `luarocks install busted`
+pulls its dependencies from GitHub tarballs, which fails outright behind a
+proxy or an offline network — a dead end that costs a while to diagnose.
+
+**If `./kodev` fails immediately**, the `base/` submodule is probably not
+initialised — it carries the entire native toolchain. `git submodule update
+--init --recursive`. Full emulator setup, including running it headless over
+SSH and the DPI flag that matters: `.agents/planning/post-v1-roadmap-handoff.md`
+→ W0.
 
 The emulator has no `/dev/input/eventX`, no `EVIOCGABS`, no E-ink waveform
 modes — it renders widgets/BlitBuffer/gestures only. Raw input and refresh
@@ -160,9 +166,10 @@ widget code genuinely can't be unit-tested.
   in this codebase.
 - **Documentation changes ride with the code change that needs them** — see
   `.github/skills/documentation-as-code/SKILL.md` (repo root) for what moves
-  together (doc comments, ADRs, config examples, AGENTS.md's File Map).
+  together (doc comments, ADRs, config examples, the `.agents/notes/` topic
+  covering the area you changed).
 - **E-ink refresh / waveform changes:** hard rules in
-  `.github/instructions/eink-refresh.instructions.md`; on-device test
+  `.github/skills/waveform-experimentation/references/eink-refresh-rules.md`; on-device test
   procedure in `.github/skills/waveform-experimentation/SKILL.md` (both
   repo root).
 
@@ -175,9 +182,11 @@ skip the rest.
 
 | Topic | What it covers | File (repo root `.agents/`) |
 |-------|-----------------|------------------------------|
+| Code layout / data flow | How the pieces connect, and what is deliberately not where you'd expect | `notes/code-layout.md` |
 | Color / dark mode | Canonical hex storage invariant, why dark mode must be display-only | `notes/stroke-color-invariant.md` |
 | E-ink refresh / waveforms | Kaleido color waveform modes, A2-live + deferred GLRC16 tighten-pass design | `notes/waveform-refresh-research.md` |
 | Input path architecture | Gesture vs. raw-evdev, per-flag scope, hardware eraser detection | `notes/input-path-architecture.md` |
+| Finger-draw latency (open) | Why finger strokes lose their opening millimetres, and the candidate fixes | `notes/finger-draw-input-latency.md` |
 | Canvas widget lifecycle | `self.dimen` mutation rule, orientation re-lock, gesture zone timing | `notes/canvas-widget-gotchas.md` |
 | Known tech debt | Deferred cleanup items and their resolutions | `notes/tech-debt.md` |
 | Storage format | SVG + embedded JSON metadata | `ADRs/ADR-001-svg-with-embedded-json-metadata.md` |
@@ -186,4 +195,5 @@ skip the rest.
 | Hover suppression | Pressure-based BTN_TOUCH synthesis | `ADRs/ADR-004-pressure-based-btn-touch-synthesis.md` |
 | Undo scope | Why undo is per-page | `ADRs/ADR-005-per-page-undo-stack.md` |
 | Notebook storage layout | UUID directory layout | `ADRs/ADR-006-uuid-directory-layout-for-notebooks.md` |
+| Commit-to-master workflow | Why this repo runs without pull requests | `ADRs/ADR-007-direct-to-master-no-prs.md` |
 | Coordinate translation | Rotation-aware raw-to-screen mapping formula | `planning/fastnote-dev-plan-v2.md` → "Coordinate translation" |

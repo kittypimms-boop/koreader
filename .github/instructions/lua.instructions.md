@@ -48,6 +48,52 @@ throwaway name.
 
 ---
 
+## Undeclared variables are global — always write `local`
+
+Lua's other silent footgun, alongside the `_` trap above: **an undeclared
+variable is a global**, so a typo writes or reads a global instead of
+raising an error.
+
+```lua
+-- WRONG — 'reslt' silently becomes a global
+for __, point in ipairs(points) do
+    reslt = transform(point)
+    table.insert(output, reslt)
+end
+
+-- RIGHT
+for __, point in ipairs(points) do
+    local result = transform(point)
+    table.insert(output, result)
+end
+```
+
+Declare everything with `local`. Module-level locals at the top of a file
+are fine — they aren't globals. `luacheck` catches both undefined globals
+and unused locals; the project `.luacheckrc` is already configured (it's
+what suppresses the `__*` warnings the `_`/`__` convention depends on), so
+run it rather than relying on review to spot these.
+
+---
+
+## String patterns are not regex
+
+`string.match`/`gmatch`/`gsub` use Lua patterns, **not PCRE**. This matters
+here because `lib/svg.lua` parses SVG text with them.
+
+| Lua | Meaning | PCRE |
+|-----|---------|------|
+| `%d` `%a` `%s` `%w` | digit, letter, space, alnum | `\d` `\a` `\s` `\w` |
+| `%.` | literal dot | `\.` |
+| `-` | 0+, non-greedy | `*?` |
+| `%b()` | balanced pair | — |
+
+There is no alternation (`|`) and no optional group. Escape magic
+characters with `%`, not `\`. When a pattern starts fighting you, the
+answer is usually two simpler matches rather than one clever one.
+
+---
+
 ## Variable naming — no cryptic abbreviations
 
 Single-letter or two-letter names are almost always wrong outside of tight math loops.
@@ -303,6 +349,7 @@ The threshold is: if you find yourself copy-pasting a block a second time, name 
 ## Checklist before committing
 
 - [ ] No `_` used as a loop throwaway — changed to `__`
+- [ ] Every new variable declared `local` (no accidental globals)
 - [ ] No single-letter or two-letter names in non-trivial scope
 - [ ] New magic numbers named as `local UPPER_CASE = ...` at file top
 - [ ] No `ffi.cdef` inside a callable function

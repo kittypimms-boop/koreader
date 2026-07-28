@@ -3,13 +3,17 @@ model/notebook.lua — one notebook: an ordered list of pages in a UUID director
 
 Storage layout:
   <base_dir>/<uuid>/
-    notebook.lua      -- metadata: name, created_at, pages list
+    notebook.lua      -- metadata: name, created_at, last_edited, last_page, pages
     page_001.svg
     page_002.svg
     ...
 
 notebook.lua is a plain Lua table returned by a Lua chunk (loadfile-compatible).
+
+The one shell-out here (`mkdir -p`) quotes its path via lib/shell_quote.
 --]]--
+
+local shell_quote = require("lib/shell_quote")
 
 local Notebook = {}
 Notebook.__index = Notebook
@@ -38,6 +42,11 @@ local function _write_meta(nb)
     f:write(string.format("  name = %q,\n", nb.name))
     f:write(string.format("  created_at = %d,\n", nb.created_at))
     f:write(string.format("  last_edited = %d,\n", nb.last_edited or 0))
+    -- Written only once set: absent means "no recorded position", which is how
+    -- callers know to fall back to the legacy global state.last_page_index.
+    if nb.last_page then
+        f:write(string.format("  last_page = %d,\n", nb.last_page))
+    end
     f:write("  pages = {\n")
     for _, fname in ipairs(nb._pages) do
         f:write(string.format("    %q,\n", fname))
@@ -59,7 +68,7 @@ end
 function Notebook.create(name, base_dir)
     local uuid = _uuid()
     local dir  = base_dir .. "/" .. uuid
-    os.execute("mkdir -p " .. dir)
+    os.execute("mkdir -p " .. shell_quote.quote(dir))
 
     local now = os.time()
     local nb = setmetatable({
@@ -96,6 +105,7 @@ function Notebook.load(uuid, base_dir)
         name        = t.name or "Untitled",
         created_at  = t.created_at or 0,
         last_edited = t.last_edited or 0,
+        last_page   = t.last_page,        -- nil = never recorded (pre-W2 metadata)
         _pages      = t.pages or {"page_001.svg"},
     }, Notebook)
 end
@@ -116,6 +126,52 @@ function Notebook:pagePath(idx)
     local fname = self._pages[idx]
     if not fname then return nil end
     return self.dir .. "/" .. fname
+end
+
+--- Clamp an arbitrary page index into [1, pageCount()].
+-- nil, a non-number, or an out-of-range index all resolve to a real page —
+-- a stored index can outlive the page it pointed at.
+-- @return number
+function Notebook:clampPage(idx)
+    if type(idx) ~= "number" then return 1 end
+    return math.max(1, math.min(math.floor(idx), self:pageCount()))
+end
+
+--- True when this notebook's directory is still on disk.
+-- Guards against a notebook that was moved, renamed or deleted outside the app.
+function Notebook:exists()
+    local f = io.open(self.dir .. "/notebook.lua", "r")
+    if not f then return false end
+    f:close()
+    return true
+end
+
+--- Resolve a page index to something that is safe to open.
+-- Clamps idx into range and verifies the notebook itself is still there.
+-- Returns nil when the notebook directory is gone or it has no pages at all —
+-- callers treat that as "fall back to the browser", never as an error.
+--
+-- A missing page *file* is deliberately NOT a failure: an SVG is only written
+-- on first save, so an undrawn page legitimately has no file yet.
+-- @number idx  Desired page index (may be nil or out of range).
+-- @return number|nil, string|nil  (clamped index, absolute page path)
+function Notebook:resolvePage(idx)
+    if self:pageCount() == 0 then return nil end
+    if not self:exists() then return nil end
+    local page_idx = self:clampPage(idx)
+    local path     = self:pagePath(page_idx)
+    if not path then return nil end
+    return page_idx, path
+end
+
+--- Record the page the user was last on, and persist it.
+-- Clamped, so a caller cannot store an index this notebook can't reach.
+-- @number idx
+-- @return number  The clamped index actually stored.
+function Notebook:setLastPage(idx)
+    self.last_page = self:clampPage(idx)
+    _write_meta(self)
+    return self.last_page
 end
 
 --- Append a new blank page and return its index and path.

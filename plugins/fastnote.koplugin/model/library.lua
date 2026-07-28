@@ -2,17 +2,24 @@
 model/library.lua — all notebooks, plus app-wide state.
 
 Storage layout (under <koreader_data>/fastnote/):
-  state.lua           -- last_notebook_uuid, last_page_index
+  state.lua           -- app-wide: last_notebook_uuid, last_page_index,
+                      -- dark_mode, current_color, pressure_floor
   notebooks/
     <uuid>/           -- one dir per notebook
-      notebook.lua
+      notebook.lua    -- per-notebook, incl. last_page (see resolveResume)
       page_001.svg
       ...
 
 Directory scanning uses io.popen("ls") — works on Kobo Linux.
+
+Every path interpolated into a shell command goes through
+lib/shell_quote — see that module for why. Paths are machine-generated
+UUIDs today, but user-typed folder names are planned, and an unquoted
+`rm -rf` is not something to retrofit later.
 --]]--
 
-local Notebook = require("model/notebook")
+local Notebook    = require("model/notebook")
+local shell_quote = require("lib/shell_quote")
 
 local Library = {}
 Library.__index = Library
@@ -21,7 +28,7 @@ Library.__index = Library
 -- Creates the notebooks sub-directory if missing.
 -- @string base_dir  Absolute path (no trailing slash).
 function Library.new(base_dir)
-    os.execute("mkdir -p " .. base_dir .. "/notebooks")
+    os.execute("mkdir -p " .. shell_quote.quote(base_dir .. "/notebooks"))
     local self = setmetatable({
         base_dir  = base_dir,
         _nbs      = {},   -- uuid -> Notebook
@@ -40,7 +47,10 @@ function Library:_nb_dir()
 end
 
 function Library:_scan()
-    local handle = io.popen("ls -1 " .. self:_nb_dir() .. " 2>/dev/null | sort")
+    -- Only the directory is quoted; `2>/dev/null | sort` is deliberate shell
+    -- syntax, not data.
+    local handle = io.popen("ls -1 " .. shell_quote.quote(self:_nb_dir()) ..
+                            " 2>/dev/null | sort")
     if not handle then return end
     for entry in handle:lines() do
         local meta = self:_nb_dir() .. "/" .. entry .. "/notebook.lua"
@@ -85,6 +95,42 @@ function Library:byIndex(idx)
     return uuid and self._nbs[uuid]
 end
 
+--- Resolve where to resume: which notebook, and which page inside it.
+--
+-- The single choke-point for "open a notebook" — used by the launch path and
+-- by the browser's open callback, so both get the same validation. Returns nil
+-- whenever the target cannot be resolved (no stored uuid, notebook deleted,
+-- directory moved or renamed, notebook left with no pages); callers fall back
+-- to the browser rather than opening a canvas at a dead path.
+--
+-- Page preference, most to least specific:
+--   1. the notebook's own last_page (per-notebook, survives a folder move)
+--   2. state.last_page_index, but only when it names *this* notebook — it is a
+--      global field and is meaningless for any other one
+--   3. page 1
+-- The chosen index is clamped to the notebook's real page count.
+--
+-- @param state  Persisted app state (from readState); may be nil.
+-- @param uuid   Notebook to open; defaults to state.last_notebook_uuid.
+-- @return Notebook|nil, number|nil, string|nil  (notebook, page index, page path)
+function Library:resolveResume(state, uuid)
+    state = state or {}
+    uuid  = uuid or state.last_notebook_uuid
+    if not uuid then return nil end
+
+    local nb = self:byUUID(uuid)
+    if not nb then return nil end
+
+    local page_idx = nb.last_page
+    if not page_idx and state.last_notebook_uuid == uuid then
+        page_idx = state.last_page_index
+    end
+
+    local resolved_idx, path = nb:resolvePage(page_idx)
+    if not resolved_idx then return nil end
+    return nb, resolved_idx, path
+end
+
 --- Ordered list of all notebooks.
 function Library:all()
     local out = {}
@@ -113,7 +159,7 @@ end
 function Library:deleteNotebook(uuid)
     local nb = self._nbs[uuid]
     if not nb then return end
-    os.execute("rm -rf " .. nb.dir)
+    os.execute("rm -rf " .. shell_quote.quote(nb.dir))
     self._nbs[uuid] = nil
     for i, u in ipairs(self._order) do
         if u == uuid then table.remove(self._order, i); break end

@@ -21,12 +21,15 @@ that first if you haven't already; this skill assumes it.
 
 - [ ] No inline code examples — link to the instructions/notes file instead.
 - [ ] No paragraph-plus explaining *why* — one clause, then a link.
-- [ ] Every File Map / Topics entry points to a file that **actually
-      exists** — verify with `ls`/`find` before writing the line. (This repo
-      has shipped phantom entries before: `ui/colorpicker.lua`,
-      `ui/chrome.lua`, `input/buttondev.lua`, and a `state.lua` were all
-      listed as real files when the functionality was actually inline
-      elsewhere or never built as a separate file.)
+- [ ] **No file-by-file map.** If you're about to list every file with a
+      description of each, stop — see `agents.instructions.md` decision-tree
+      item 1. Directory *roles*, negative space, and invariants stay;
+      inventories go to a `notes/` topic. (This repo has shipped phantom
+      entries before: `ui/colorpicker.lua`, `ui/chrome.lua`,
+      `input/buttondev.lua`, and a `state.lua` were all listed as real files
+      when the functionality was inline elsewhere or never built.)
+- [ ] Every path mentioned anywhere in the file **actually exists** — verify
+      with `ls`/`find` before writing the line.
 - [ ] No hardcoded volatile numbers (test counts, "as of" dates, stage
       counts) that will silently drift. Say "run `busted spec/`" instead of
       "187 tests"; say "see the planning doc for current stage status"
@@ -50,12 +53,19 @@ that first if you haven't already; this skill assumes it.
 
 ## Context
 
-<the problem; the options considered, briefly>
+<the problem and the constraint that forced a choice>
 
 ## Decision
 
 <what was chosen, concretely — include the actual format/algorithm/structure
 if that's the substance of the decision>
+
+## Alternatives Considered
+
+- **<chosen option>** — why it fits the constraints.
+- **<rejected option>** — Why NOT: <the specific reason — cost, complexity,
+  incompatibility, a failure it would have caused>.
+- **<rejected option>** — Why NOT: <specific reason>.
 
 ## Consequences
 
@@ -63,6 +73,18 @@ if that's the substance of the decision>
 - <what this makes hard, or a tradeoff accepted>
 - <a landmine or non-obvious follow-on effect, if any>
 ```
+
+**The "Why NOT" lines are the highest-value part of an ADR** and the part
+most often skipped. Without them a future agent confidently re-proposes an
+option that was already investigated and rejected, and the only way to find
+that out is to re-do the investigation. One sentence per rejected option is
+enough.
+
+ADR-001 through ADR-007 predate this section and use Context / Decision /
+Consequences only — that's expected, not drift. Don't retrofit an
+Alternatives section onto them by guessing at reasoning that wasn't
+recorded; ADRs are historical records (see `agents.instructions.md`). Use
+the full template for ADR-008 onward.
 
 Use the next sequential ADR number. Remember ADRs are historical records
 once Accepted — see `agents.instructions.md` for that rule before editing
@@ -104,8 +126,10 @@ loads only what's relevant to its current task.
 Run this whenever asked to "review the docs" or before a large refactor
 that will touch many files referenced in AGENTS.md:
 
-1. For every path mentioned in AGENTS.md's File Map and Topics table,
-   confirm the file exists (`ls`/`find`). Remove or correct any that don't.
+1. For every path mentioned in an AGENTS.md — Topics table, navigation
+   hints, prose — confirm the file exists (`ls`/`find`). Remove or correct
+   any that don't. Check the `notes/` topic files the same way; a stale path
+   there misleads just as effectively.
 2. For every "not started" / "not implemented" / "planned" claim, grep the
    actual code to confirm it's still true.
 3. Diff any "convenience copy" files against their canonical source.

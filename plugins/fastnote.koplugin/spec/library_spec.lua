@@ -7,7 +7,8 @@ local plugin_dir = (debug.getinfo(1,"S").source:match("@(.+)/spec/") or "..")
 package.path = plugin_dir .. "/?.lua;" .. plugin_dir .. "/lib/?.lua;" ..
                plugin_dir .. "/model/?.lua;" .. package.path
 
-local Library = require("model/library")
+local Library     = require("model/library")
+local shell_quote = require("lib/shell_quote")
 
 describe("Library", function()
 
@@ -16,11 +17,11 @@ describe("Library", function()
     before_each(function()
         base_dir = os.tmpname()
         os.remove(base_dir)
-        os.execute("mkdir -p " .. base_dir)
+        os.execute("mkdir -p " .. shell_quote.quote(base_dir))
     end)
 
     after_each(function()
-        os.execute("rm -rf " .. base_dir)
+        os.execute("rm -rf " .. shell_quote.quote(base_dir))
     end)
 
     describe("Library.new", function()
@@ -120,6 +121,81 @@ describe("Library", function()
         end)
     end)
 
+    -- ── resume resolution (W2) ─────────────────────────────────────────────
+
+    describe("Library:resolveResume", function()
+        it("returns nil when state names no notebook", function()
+            local lib = Library.new(base_dir)
+            lib:createNotebook("A")
+            assert.is_nil(lib:resolveResume({}))
+        end)
+
+        it("returns nil when the stored uuid is not in the library", function()
+            local lib = Library.new(base_dir)
+            lib:createNotebook("A")
+            assert.is_nil(lib:resolveResume({last_notebook_uuid = "nb_gone", last_page_index = 1}))
+        end)
+
+        it("resumes the stored notebook at the legacy global page index", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            nb:addPage()
+            nb:addPage()
+
+            local target, idx, path =
+                lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 3})
+            assert.equal(nb, target)
+            assert.equal(3, idx)
+            assert.truthy(path:find("page_003.svg$"))
+        end)
+
+        it("prefers the notebook's own last_page over the global index", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            nb:addPage()
+            nb:setLastPage(2)
+
+            local __, idx = lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 1})
+            assert.equal(2, idx)
+        end)
+
+        it("clamps a stored page index beyond pageCount", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")          -- 1 page
+            local __, idx =
+                lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 42})
+            assert.equal(1, idx)
+        end)
+
+        it("opens an explicitly named notebook, overriding the stored uuid", function()
+            local lib = Library.new(base_dir)
+            local nb1 = lib:createNotebook("A")
+            local nb2 = lib:createNotebook("B")
+            nb2:addPage()
+
+            local target, idx =
+                lib:resolveResume({last_notebook_uuid = nb1.uuid, last_page_index = 2}, nb2.uuid)
+            assert.equal(nb2, target)
+            -- The global index belongs to nb1, so it must not leak into nb2.
+            assert.equal(1, idx)
+        end)
+
+        it("returns nil when the notebook directory vanished underneath us", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            os.execute("rm -rf " .. shell_quote.quote(nb.dir))
+            assert.is_nil(lib:resolveResume({last_notebook_uuid = nb.uuid, last_page_index = 1}))
+        end)
+
+        it("tolerates a nil state table", function()
+            local lib = Library.new(base_dir)
+            local nb  = lib:createNotebook("A")
+            local target, idx = lib:resolveResume(nil, nb.uuid)
+            assert.equal(nb, target)
+            assert.equal(1, idx)
+        end)
+    end)
+
     describe("Library:all", function()
         it("returns all notebooks", function()
             local lib = Library.new(base_dir)
@@ -154,6 +230,55 @@ describe("Library", function()
             assert.equal("New", all[1].name)
             assert.equal("Old", all[2].name)
         end)
+    end)
+
+    -- ── shell safety ──────────────────────────────────────────────────────
+    --
+    -- Library shells out for mkdir/ls/rm. These prove the quoting is applied
+    -- at the call sites, not merely available in lib/shell_quote — a real
+    -- library path under W4's filesystem-folder model will contain
+    -- user-typed text.
+
+    describe("a base_dir containing shell metacharacters", function()
+
+        -- Space, single quote, command substitution, chaining, glob, and a
+        -- separator — but no '/', which no filename may contain.
+        local HOSTILE = "it's $(date) `id` && rm -rf * ; \"x\""
+
+        it("supports the full create / rescan / delete cycle", function()
+            local root = base_dir .. "/" .. HOSTILE
+            local lib  = Library.new(root)
+            local nb   = lib:createNotebook("A")
+            assert.equal(1, lib:notebookCount())
+
+            -- Re-scan from disk: exercises the io.popen("ls") path.
+            local lib2 = Library.new(root)
+            assert.equal(1, lib2:notebookCount())
+            assert.equal("A", lib2:byUUID(nb.uuid).name)
+
+            lib2:deleteNotebook(nb.uuid)
+            assert.equal(0, lib2:notebookCount())
+            assert.is_nil(io.open(nb.dir .. "/notebook.lua", "r"))
+        end)
+
+        it("does not let an embedded rm reach the shell", function()
+            -- Library.new appends "/notebooks" to whatever it is given, so
+            -- the injected command is aimed at <sentinel>/notebooks. Unquoted,
+            -- the `;` ends the mkdir and that rm -rf runs for real.
+            local sentinel = base_dir .. "/sentinel"
+            os.execute("mkdir -p " .. shell_quote.quote(sentinel .. "/notebooks"))
+            local marker = io.open(sentinel .. "/notebooks/marker", "w")
+            marker:write("keep me")
+            marker:close()
+
+            Library.new(base_dir .. "/x ; rm -rf " .. sentinel)
+
+            local survivor = io.open(sentinel .. "/notebooks/marker", "r")
+            assert.truthy(survivor)
+            assert.equal("keep me", survivor:read("*a"))
+            survivor:close()
+        end)
+
     end)
 
 end)
