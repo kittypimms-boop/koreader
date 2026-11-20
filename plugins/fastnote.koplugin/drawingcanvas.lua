@@ -1843,9 +1843,13 @@ function DrawingCanvas:_pollTouch()
 
     self._touchdev:poll(function(slot_ev)
         -- Filter through palm rejection
-        local filtered = self._palmreject
-            and self._palmreject:onTouchEvent(slot_ev)
-            or  slot_ev
+        -- Not `palmreject and palmreject:onTouchEvent(ev) or ev`: a nil result
+        -- (rejected) is falsy, so that form falls through to `ev` and never
+        -- rejects anything (lua.instructions.md, the and/or ternary pitfall).
+        local filtered = slot_ev
+        if self._palmreject then
+            filtered = self._palmreject:onTouchEvent(slot_ev)
+        end
 
         if filtered and self.finger_draw then
             -- A canvas-owned dialog is on top: this touch is on the
