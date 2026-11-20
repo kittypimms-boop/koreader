@@ -22,6 +22,7 @@ function StrokeBuffer.new()
         strokes = {},   -- committed strokes (source of truth)
         undone  = {},   -- strokes moved here by undo (available for redo)
         current = nil,  -- stroke in progress (not yet committed)
+        current_owner = nil,  -- input path that started `current` (see Owner tag)
     }, StrokeBuffer)
 end
 
@@ -29,33 +30,70 @@ end
 -- Live drawing
 -- ---------------------------------------------------------------------------
 
+-- Owner tag
+--
+-- On the Kobo three input paths (pen, raw touch, gesture) write into the one
+-- current stroke, so any path's move extends another path's stroke and any
+-- path's up commits it. Each pen* call may carry an owner string ("pen",
+-- "touch", "gesture"). A call with no owner matches any stroke.
+--   * trace_fn(op, x, y, owner, open_owner), if set (class or instance), sees
+--     every operation with the owner of the stroke open at that moment, so a
+--     debug log can show cross-path interference. op is "down", "move" or "up";
+--     x and y are nil for "up".
+--   * enforce_owner, when true, isolates owners: another owner's move and up
+--     are ignored, and another owner's down commits the open stroke instead of
+--     silently replacing it. Off by default, which keeps the original behavior.
+
+--- True when a call by `owner` must be ignored for the open stroke.
+local function _foreign(self, owner)
+    return self.enforce_owner and owner ~= nil
+           and self.current_owner ~= nil and owner ~= self.current_owner
+end
+
 --- Begin a new stroke at (x, y) with line width w and given color.
 -- Clears the redo stack — any new stroke discards redo history.
 -- @number x      screen x
 -- @number y      screen y
 -- @number w      line width at this sample
 -- @string color  hex color string (optional, defaults to black)
-function StrokeBuffer:penDown(x, y, w, color)
-    self.current = Stroke.new(color)
+-- @string owner  input path starting the stroke (optional)
+function StrokeBuffer:penDown(x, y, w, color, owner)
+    if self.trace_fn then self.trace_fn("down", x, y, owner, self.current_owner) end
+    if self.current and _foreign(self, owner) then
+        -- Another path's stroke is open: keep it rather than discard it.
+        if not self.current:isEmpty() then
+            self.strokes[#self.strokes + 1] = self.current
+        end
+        self.current       = nil
+        self.current_owner = nil
+    end
+    self.current       = Stroke.new(color)
+    self.current_owner = owner
     self.current:addPoint(x, y, w)
     self.undone = {}  -- new stroke clears redo history
 end
 
 --- Extend the current stroke with a new sample.
 -- No-op if penDown has not been called.
-function StrokeBuffer:penMove(x, y, w)
-    if self.current then
-        self.current:addPoint(x, y, w)
-    end
+function StrokeBuffer:penMove(x, y, w, owner)
+    if not self.current then return end
+    if self.trace_fn then self.trace_fn("move", x, y, owner, self.current_owner) end
+    if _foreign(self, owner) then return end
+    self.current:addPoint(x, y, w)
 end
 
 --- Commit the current stroke to the strokes list.
 -- Discards single-point strokes (no segment to draw).
-function StrokeBuffer:penUp()
+function StrokeBuffer:penUp(owner)
+    if self.current and self.trace_fn then
+        self.trace_fn("up", nil, nil, owner, self.current_owner)
+    end
+    if self.current and _foreign(self, owner) then return end
     if self.current and not self.current:isEmpty() then
         self.strokes[#self.strokes + 1] = self.current
     end
-    self.current = nil
+    self.current       = nil
+    self.current_owner = nil
 end
 
 -- ---------------------------------------------------------------------------

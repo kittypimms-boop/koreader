@@ -72,6 +72,115 @@ describe("StrokeBuffer", function()
         end)
     end)
 
+    -- ── owner tag ────────────────────────────────────────────────────────────
+    --
+    -- On the Kobo three input paths (pen, raw touch, gesture) write into the one
+    -- current stroke, so any path's move extends another path's stroke and any
+    -- path's up commits it. Callers tag each operation with an owner. By default
+    -- the tag is only reported to trace_fn and behavior is unchanged; with
+    -- enforce_owner the buffer isolates owners.
+
+    describe("owner tag", function()
+
+        it("default: a different owner's penMove still extends the stroke", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, nil, "gesture")
+            sb:penMove(5, 5, 2, "pen")
+            assert.equals(2, sb.current:pointCount())
+        end)
+
+        it("default: a different owner's penUp still commits the stroke", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, nil, "gesture")
+            sb:penMove(5, 5, 2, "gesture")
+            sb:penUp("pen")
+            assert.equals(1, #sb.strokes)
+        end)
+
+        it("records the owner of the open stroke and clears it on penUp", function()
+            local sb = StrokeBuffer.new()
+            sb:penDown(0, 0, 2, nil, "touch")
+            assert.equals("touch", sb.current_owner)
+            sb:penMove(5, 5, 2, "touch")
+            sb:penUp("touch")
+            assert.is_nil(sb.current_owner)
+        end)
+
+        it("reports every operation to trace_fn with the open stroke's owner", function()
+            local sb = StrokeBuffer.new()
+            local seen = {}
+            sb.trace_fn = function(op, x, y, owner, open_owner)
+                seen[#seen + 1] = {op = op, x = x, y = y, owner = owner, open_owner = open_owner}
+            end
+            sb:penDown(1, 2, 2, nil, "gesture")
+            sb:penMove(3, 4, 2, "pen")
+            sb:penUp("touch")
+            assert.equals(3, #seen)
+            assert.same({op = "down", x = 1, y = 2, owner = "gesture", open_owner = nil}, seen[1])
+            assert.same({op = "move", x = 3, y = 4, owner = "pen", open_owner = "gesture"}, seen[2])
+            assert.equals("up", seen[3].op)
+            assert.equals("touch", seen[3].owner)
+            assert.equals("gesture", seen[3].open_owner)
+        end)
+
+        it("a move with no open stroke is not traced", function()
+            local sb = StrokeBuffer.new()
+            local count = 0
+            sb.trace_fn = function() count = count + 1 end
+            sb:penMove(1, 1, 2, "pen")
+            assert.equals(0, count)
+        end)
+
+        describe("with enforce_owner", function()
+            local function enforcing()
+                local sb = StrokeBuffer.new()
+                sb.enforce_owner = true
+                return sb
+            end
+
+            it("a different owner's penMove does not extend the stroke", function()
+                local sb = enforcing()
+                sb:penDown(0, 0, 2, nil, "gesture")
+                sb:penMove(5, 5, 2, "pen")
+                assert.equals(1, sb.current:pointCount())
+            end)
+
+            it("a different owner's penUp does not commit the stroke", function()
+                local sb = enforcing()
+                sb:penDown(0, 0, 2, nil, "gesture")
+                sb:penMove(5, 5, 2, "gesture")
+                sb:penUp("touch")
+                assert.equals(0, #sb.strokes)
+                assert.is_not_nil(sb.current)
+            end)
+
+            it("the owner's own penUp commits", function()
+                local sb = enforcing()
+                sb:penDown(0, 0, 2, nil, "gesture")
+                sb:penMove(5, 5, 2, "gesture")
+                sb:penUp("gesture")
+                assert.equals(1, #sb.strokes)
+            end)
+
+            it("an unowned call matches any owner", function()
+                local sb = enforcing()
+                sb:penDown(0, 0, 2, nil, "gesture")
+                sb:penMove(5, 5, 2)
+                sb:penUp()
+                assert.equals(1, #sb.strokes)
+            end)
+
+            it("a penDown by another owner commits the open stroke instead of discarding it", function()
+                local sb = enforcing()
+                sb:penDown(0, 0, 2, nil, "gesture")
+                sb:penMove(5, 5, 2, "gesture")
+                sb:penDown(50, 50, 2, nil, "touch")
+                assert.equals(1, #sb.strokes)
+                assert.equals("touch", sb.current_owner)
+            end)
+        end)
+    end)
+
     -- ── isEmpty / hasStrokes ────────────────────────────────────────────────
 
     describe("isEmpty / hasStrokes", function()
