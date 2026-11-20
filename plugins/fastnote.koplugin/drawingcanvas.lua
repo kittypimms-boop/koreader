@@ -48,6 +48,10 @@ local CHROME_HEIGHT     = 75   -- top strip height in pixels
 local CHROME_EXIT_W     = 80   -- width of exit tap area (left)
 local CHROME_TOOLS_W    = 80   -- width of tools tap area (right)
 
+-- Debug log: a step between consecutive points of one stroke larger than this
+-- is logged as a JUMP (normal finger speed at 60 Hz is under about 40 px).
+local JUMP_LOG_PX = 120
+
 -- Default stroke appearance
 local DEFAULT_LINE_WIDTH = 4
 local DEFAULT_COLOR      = "#000000"
@@ -495,6 +499,7 @@ function DrawingCanvas:onCloseWidget()
     -- teardown.
     if self._event_log then
         PenDev.raw_log_fn = nil
+        StrokeBuffer.trace_fn = nil
         self._event_log:close()
         self._event_log = nil
     end
@@ -544,6 +549,7 @@ function DrawingCanvas:_toggleInputLog()
     if self._event_log then
         -- Turning OFF.
         PenDev.raw_log_fn = nil
+        StrokeBuffer.trace_fn = nil
         self._event_log:close()
         self._event_log = nil
         logger.dbg("FastNote canvas: debug input log disabled")
@@ -558,7 +564,11 @@ function DrawingCanvas:_toggleInputLog()
     os.execute("mkdir -p " .. shell_quote.quote(log_dir))
     local log_path = log_dir .. "/input.log"
 
-    local log, err = EventLog.new(log_path)
+    -- Millisecond monotonic timestamps, so lines from the pen, touch, gesture
+    -- and stroke-buffer paths can be ordered against each other.
+    local log, err = EventLog.new(log_path, {
+        clock_fn = function() return time.to_ms(time.now()) end,
+    })
     if not log then
         logger.warn("FastNote canvas: could not open debug input log:", err)
         return
@@ -568,7 +578,53 @@ function DrawingCanvas:_toggleInputLog()
     PenDev.raw_log_fn = function(level, type_name, code_name, value)
         log:write(level, type_name, code_name, value)
     end
+    StrokeBuffer.trace_fn = self:_makeStrokeTrace(log)
+
+    -- One-off context for reading the rest of the log.
+    local pen_path   = self._pendev   and self._pendev.path
+    local touch_path = self._touchdev and self._touchdev.path
+    log:write("INFO", "devices",
+        "pen=" .. tostring(pen_path) .. " touch=" .. tostring(touch_path),
+        "same_node=" .. tostring(pen_path ~= nil and pen_path == touch_path))
+    log:write("INFO", "mode",
+        "use_raw_input=" .. tostring(self.use_raw_input),
+        "finger_draw=" .. tostring(self.finger_draw))
     logger.dbg("FastNote canvas: debug input log enabled at", log_path)
+end
+
+--- Build the stroke-buffer trace used while the debug log is on.
+-- Logs only what separates the input paths: an operation by a different owner
+-- than the one whose stroke is open (cross-path interference), a down that
+-- replaces an open stroke, and a JUMP between consecutive points of a stroke.
+function DrawingCanvas:_makeStrokeTrace(log)
+    local last_x, last_y
+    return function(op, x, y, owner, open_owner)
+        local foreign = owner ~= nil and open_owner ~= nil and owner ~= open_owner
+        local who     = string.format("owner=%s open=%s", tostring(owner), tostring(open_owner))
+        if op == "down" then
+            if open_owner ~= nil then
+                log:write("SB", "down", who, "replaces-open-stroke")
+            end
+            last_x, last_y = x, y
+        elseif op == "move" then
+            if foreign then
+                log:write("SB", "move", who, string.format("x=%.0f y=%.0f", x, y))
+            end
+            if last_x then
+                local dx, dy = x - last_x, y - last_y
+                if dx * dx + dy * dy > JUMP_LOG_PX * JUMP_LOG_PX then
+                    log:write("SB", "JUMP", "owner=" .. tostring(owner),
+                        string.format("from=%.0f,%.0f to=%.0f,%.0f", last_x, last_y, x, y))
+                end
+            end
+            last_x, last_y = x, y
+        elseif op == "up" then
+            if foreign then
+                log:write("SB", "up", who, "other-owner-commit")
+            end
+            last_x, last_y = nil, nil
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -965,6 +1021,14 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local x = math.floor(ges.pos.x)
     local y = math.floor(ges.pos.y)
 
+    if self._event_log then
+        self._event_log:write("GES", "pan",
+            string.format("pos=%d,%d", x, y),
+            string.format("start=%s last=%s,%s",
+                ges.start_pos and string.format("%d,%d", ges.start_pos.x, ges.start_pos.y) or "nil",
+                tostring(self._stroke_x), tostring(self._stroke_y)))
+    end
+
     -- Ignore strokes in the chrome strip. Close any open stroke first --
     -- otherwise a later onDrawStrokeEnd (which does not check
     -- CHROME_HEIGHT) draws a final segment from the stroke's last real
@@ -973,7 +1037,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
     -- .agents/plans/post-color-fix-followups.md, Bug 1.
     if y < CHROME_HEIGHT then
         if self._stroke_buf.current then
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("gesture")
             self._page_dirty = true
         end
         self._stroke_x, self._stroke_y = nil, nil
@@ -1001,7 +1065,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local gsy = start_y or y
     if gsx ~= self._ges_start_x or gsy ~= self._ges_start_y then
         if self._stroke_buf.current then
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("gesture")
             self._page_dirty = true
         end
         -- New finger-down: cancel the tighten timer but keep the rect so
@@ -1028,9 +1092,9 @@ function DrawingCanvas:onDrawStroke(_, ges)
 
     -- StrokeBuffer: start or extend current stroke
     if not self._stroke_buf.current then
-        self._stroke_buf:penDown(prev_x, prev_y, DEFAULT_LINE_WIDTH, self._current_color)
+        self._stroke_buf:penDown(prev_x, prev_y, DEFAULT_LINE_WIDTH, self._current_color, "gesture")
     end
-    self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH)
+    self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH, "gesture")
 
     self:_drawSegment(prev_x, prev_y, x, y, DEFAULT_LINE_WIDTH)
 
@@ -1053,8 +1117,13 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
     if ges and ges.pos then
         local x = math.floor(ges.pos.x)
         local y = math.floor(ges.pos.y)
+        if self._event_log then
+            self._event_log:write("GES", "pan_release",
+                string.format("pos=%d,%d", x, y),
+                string.format("last=%s,%s", tostring(self._stroke_x), tostring(self._stroke_y)))
+        end
         if self._stroke_x and self._stroke_y then
-            self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH)
+            self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH, "gesture")
             self:_drawSegment(self._stroke_x, self._stroke_y, x, y, DEFAULT_LINE_WIDTH)
         end
         self._stroke_max_x = math.max(self._stroke_max_x or x, x)
@@ -1063,7 +1132,7 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
         self._stroke_min_y = math.min(self._stroke_min_y or y, y)
     end
 
-    self._stroke_buf:penUp()
+    self._stroke_buf:penUp("gesture")
     self._page_dirty = true
     self:_scheduleIdleSave()
 
@@ -1773,9 +1842,9 @@ function DrawingCanvas:_pollPen()
                 -- New pen contact: cancel the tighten timer but keep the rect
                 -- so all strokes in this session share one color refresh.
                 if self._tighten_fn then self:_cancelTightenTimer() end
-                self._stroke_buf:penDown(sx, sy, lw, self._current_color)
+                self._stroke_buf:penDown(sx, sy, lw, self._current_color, "pen")
             else
-                self._stroke_buf:penMove(sx, sy, lw)
+                self._stroke_buf:penMove(sx, sy, lw, "pen")
             end
 
             -- Only update the display buffer when there is an active stroke,
@@ -1793,7 +1862,7 @@ function DrawingCanvas:_pollPen()
             if not self._eraser_locked then
                 self._eraser_mode = false
             end
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("pen")
             -- Flush any rect the live-refresh throttle hadn't fired for yet,
             -- so the last segments of a stroke are never left un-refreshed.
             -- Unconditional (not behind had_stroke or the flag check): it's a
@@ -1851,6 +1920,14 @@ function DrawingCanvas:_pollTouch()
             filtered = self._palmreject:onTouchEvent(slot_ev)
         end
 
+        if self._event_log then
+            self._event_log:write("TCH", slot_ev.type,
+                string.format("slot=%s id=%s", tostring(slot_ev.slot), tostring(slot_ev.id)),
+                string.format("x=%s y=%s major=%s %s", tostring(slot_ev.x),
+                    tostring(slot_ev.y), tostring(slot_ev.touch_major),
+                    filtered and "accepted" or "rejected"))
+        end
+
         if filtered and self.finger_draw then
             -- A canvas-owned dialog is on top: this touch is on the
             -- dialog's own contents, not the canvas underneath -- see
@@ -1875,11 +1952,11 @@ function DrawingCanvas:_pollTouch()
                 self._last_touch_x = nil
                 self._last_touch_y = nil
                 if self._tighten_fn then self:_cancelTightenTimer() end
-                self._stroke_buf:penDown(fx, fy, DEFAULT_LINE_WIDTH, self._current_color)
+                self._stroke_buf:penDown(fx, fy, DEFAULT_LINE_WIDTH, self._current_color, "touch")
                 self._last_touch_x = fx
                 self._last_touch_y = fy
             elseif filtered.type == "move" then
-                self._stroke_buf:penMove(fx, fy, DEFAULT_LINE_WIDTH)
+                self._stroke_buf:penMove(fx, fy, DEFAULT_LINE_WIDTH, "touch")
                 if self._last_touch_x then
                     self:_drawSegment(self._last_touch_x, self._last_touch_y,
                                       fx, fy, DEFAULT_LINE_WIDTH)
@@ -1887,7 +1964,7 @@ function DrawingCanvas:_pollTouch()
                 self._last_touch_x = fx
                 self._last_touch_y = fy
             elseif filtered.type == "up" then
-                self._stroke_buf:penUp()
+                self._stroke_buf:penUp("touch")
                 -- Unconditional flush, same reasoning as the pen-up handler:
                 -- no-op unless a live_color_refresh rect is pending.
                 self:_flushLiveRefresh()
