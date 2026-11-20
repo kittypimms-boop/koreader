@@ -77,3 +77,29 @@ through `_saveBeforeTurn()` then `_applyPageNavigation()`.
   cleared, colour is kept. Do not use `"fast"` or `"a2"` for page content.
 - A dirty page is saved even when it is now empty, so erasing a page's last
   stroke overwrites the old SVG instead of letting it come back.
+
+## Hiding the top strip, and margin page turns
+
+The strip can be hidden (hamburger menu "Hide toolbar", the pen quick menu, or a
+double tap on the page number) and brought back with a double tap in the top peek
+band. The hidden state persists as `state.chrome_hidden` (1 or 0).
+
+- Everything that asks "is this point inside the strip" calls `_chromeHeight()`,
+  which is zero while hidden, or `_inNoInkZone(x, y)`. Never read `CHROME_HEIGHT`
+  directly for a guard.
+- A hidden strip leaves a small tab with the page number at the top edge. The tab
+  and the peek band take no ink guard of their own: drawing is allowed up to the top
+  edge, and a double tap only toggles the strip because a tap does not move.
+- While hidden there is no exit button, no arrows and no hamburger. Show the strip
+  (double tap the top band, or the pen quick menu's "Show toolbar") to reach them.
+- Double taps use `lib/double_tap.lua`, not KOReader's `double_tap` gesture:
+  enabling that gesture delays every single tap on the widget. The page-number
+  tap therefore waits `PICKER_DELAY_S` before opening the picker, so a second tap can
+  toggle the strip instead.
+- Margin page turns (`state.margin_page_turn`, off by default, toggled from the
+  hamburger menu): a double tap in the left or right margin strip turns the page back
+  or forward. While on, the margin strips take no ink (`_inNoInkZone`), on the pen
+  and gesture paths. The raw touch path has no guard yet (see
+  `notes/finger-lift-jump-diagnosis.md`, known gap).
+- `page_nav.in_margin` runs on the pen path at ~120 Hz and must not allocate; the
+  margin rects are cached by `_updateGestureZones`.

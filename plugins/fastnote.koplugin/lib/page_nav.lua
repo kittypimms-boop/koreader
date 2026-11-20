@@ -141,12 +141,17 @@ end
 --                      area, above the strips, or when there are no margins.
 function M.in_margin(zones, x, y)
     if not zones then return nil end
-    for __, entry in ipairs({{"margin_left", zones.left}, {"margin_right", zones.right}}) do
-        local name, zone = entry[1], entry[2]
-        if x >= zone.x and x < zone.x + zone.w
-                and y >= zone.y and y < zone.y + zone.h then
-            return name
-        end
+    -- Written out (no loop over a table literal) so the ~120 Hz pen path does
+    -- not allocate on every call.
+    local left = zones.left
+    if x >= left.x and x < left.x + left.w
+            and y >= left.y and y < left.y + left.h then
+        return "margin_left"
+    end
+    local right = zones.right
+    if x >= right.x and x < right.x + right.w
+            and y >= right.y and y < right.y + right.h then
+        return "margin_right"
     end
     return nil
 end

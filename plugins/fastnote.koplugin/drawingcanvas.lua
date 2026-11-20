@@ -43,6 +43,7 @@ local shell_quote       = require("lib/shell_quote")
 local time              = require("ui/time")
 local utils             = require("lib/canvas_utils")
 local page_nav          = require("lib/page_nav")
+local DoubleTap         = require("lib/double_tap")
 
 -- Chrome strip (Stage 7)
 -- 106 px is 9 mm at 300 dpi: a comfortable minimum tap target, so the page
@@ -57,6 +58,20 @@ local CHROME_TOOLS_W    = 80   -- width of tools tap area (right)
 -- flash on every turn) and not "fast"/"a2" (colour would be lost). A single
 -- constant so it can be tuned on the device.
 local PAGE_TURN_REFRESH = "partial"
+
+-- Hidden top strip. While it is hidden a small tab shows the page number, and a
+-- double tap in the top peek band brings the strip back.
+local CHROME_PEEK_H = 80       -- height of the band whose double tap shows the strip
+local CHROME_TAB_W  = 240      -- visible tab, width
+local CHROME_TAB_H  = 40       -- visible tab, height
+
+-- Page margins: a double tap in a margin strip turns the page (opt-in).
+local MARGIN_ZONE_W = 70       -- width of each strip, 5.9 mm at 300 dpi
+
+-- A lone tap on the page number opens the picker only after this long, so a
+-- second tap can toggle the strip instead.
+local DOUBLE_TAP_WINDOW_MS = 350
+local PICKER_DELAY_S       = 0.36
 
 -- Chrome page-arrow glyphs (pixels)
 local ARROW_HALF_HEIGHT = 20   -- chevron arm length, vertical
@@ -150,6 +165,12 @@ local DrawingCanvas = InputContainer:extend{
     -- that takes its place. Returns (new_page_idx, total_pages, path,
     -- kept_path_or_nil), or nil when the removal is refused.
     on_page_remove     = nil,
+
+    -- Top strip and margin preferences (persisted by the caller, like dark mode).
+    chrome_hidden            = false,  -- start with the top strip hidden
+    margin_page_turn         = false,  -- double tap in a margin turns the page
+    on_chrome_hidden_change  = nil,    -- called with (bool) when the strip is hidden or shown
+    on_margin_turn_change    = nil,    -- called with (bool) when margin page turns toggle
 
     _bb           = nil,           -- BlitBuffer (display cache)
     _stroke_buf   = nil,           -- StrokeBuffer (source of truth, Stage 4)
@@ -291,6 +312,12 @@ function DrawingCanvas:init()
     self._dark_mode      = self.dark_mode == true
     self._current_color  = self.current_color or DEFAULT_COLOR
     self._pressure_floor = self.pressure_floor or 200
+    self._chrome_hidden    = self.chrome_hidden == true
+    self._margin_page_turn = self.margin_page_turn == true
+    self._double_tap = DoubleTap.new({
+        window_ms = DOUBLE_TAP_WINDOW_MS,
+        clock_fn  = function() return time.to_ms(time.now()) end,
+    })
 
     -- Resolve tighten-pass config overrides. tighten_delay is a number, so
     -- `or` is safe here (a number is never falsy). tighten_enabled is a
@@ -575,6 +602,11 @@ end
 function DrawingCanvas:_paintChrome(bb, x, y)
     local W = self.dimen.w
 
+    if self._chrome_hidden then
+        self:_paintChromeTab(bb, x, y)
+        return
+    end
+
     -- White background
     bb:paintRect(x, y, W, CHROME_HEIGHT, Blitbuffer.COLOR_WHITE)
     -- 2 px bottom border
@@ -667,6 +699,32 @@ function DrawingCanvas:_paintChromeArrow(bb, x, cy, rect, side, state)
                    ARROW_STROKE, color)
 end
 
+--- The small tab shown at the top edge while the strip is hidden: the page
+-- number and a down chevron. A double tap anywhere in the top peek band (wider
+-- than the tab) shows the strip again.
+function DrawingCanvas:_paintChromeTab(bb, x, y)
+    local tab = page_nav.tab_rect(self.dimen.w, CHROME_TAB_W, CHROME_TAB_H)
+    local tx, ty = x + tab.x, y + tab.y
+    bb:paintRect(tx, ty, tab.w, tab.h, Blitbuffer.COLOR_WHITE)
+    bb:paintRect(tx, ty + tab.h - 2, tab.w, 2, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(tx, ty, 2, tab.h, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(tx + tab.w - 2, ty, 2, tab.h, Blitbuffer.COLOR_BLACK)
+
+    local ok_f, Font = pcall(require, "ui/font")
+    local ok_r, RT   = pcall(require, "ui/rendertext")
+    if ok_f and ok_r then
+        local face = Font:getFace("cfont", 22)
+        if face then
+            local text = page_nav.format_indicator(self.page_index, self.page_count)
+            RT:renderUtf8Text(bb, tx + 18, ty + tab.h - 11, face, text)
+        end
+    end
+    -- Down chevron at the right end of the tab
+    local cx, cy = tx + tab.w - 30, ty + math.floor(tab.h / 2)
+    utils.drawLine(bb, cx - 10, cy - 5, cx, cy + 5, 3, Blitbuffer.COLOR_BLACK)
+    utils.drawLine(bb, cx + 10, cy - 5, cx, cy + 5, 3, Blitbuffer.COLOR_BLACK)
+end
+
 --- True when a forward page turn from here would be refused (a blank page
 -- right after another blank page). Shared by the arrows and _navigatePage.
 function DrawingCanvas:_forwardNavBlocked()
@@ -690,9 +748,88 @@ function DrawingCanvas:onExitTap(_, ges)
     end
 end
 
---- Page picker: tap the "n / N" readout to jump to an arbitrary page.
-function DrawingCanvas:onPageNumberTap()
-    logger.dbg("FastNote canvas: page number tap")
+--- Tap on the "n / N" readout. A double tap hides the top strip. A lone tap
+-- opens the page picker, but only after the double-tap window has passed, so
+-- the first tap of a double tap does not pop the picker up under the second.
+function DrawingCanvas:onPageNumberTap(__, ges)
+    self:_cancelPickerTimer()
+    if self._double_tap:register("top", ges.pos.x, ges.pos.y) then
+        self:_setChromeHidden(true)
+        return true
+    end
+    self._picker_fn = function()
+        self._picker_fn = nil
+        self:_openPagePicker()
+    end
+    UIManager:scheduleIn(PICKER_DELAY_S, self._picker_fn)
+    return true
+end
+
+--- Cancel a page-picker open that is waiting out the double-tap window.
+function DrawingCanvas:_cancelPickerTimer()
+    if self._picker_fn then
+        UIManager:unschedule(self._picker_fn)
+        self._picker_fn = nil
+    end
+end
+
+--- Double tap in the top peek band while the strip is hidden shows it again.
+-- A lone tap there is consumed and does nothing.
+function DrawingCanvas:onTopPeekTap(__, ges)
+    if self._double_tap:register("top", ges.pos.x, ges.pos.y) then
+        self:_setChromeHidden(false)
+    end
+    return true
+end
+
+--- Double tap in a page margin turns the page: left strip back, right forward.
+-- A lone tap is consumed. The margin strips take no ink while this is on.
+function DrawingCanvas:onMarginLeftTap(__, ges)
+    if self._double_tap:register("margin_left", ges.pos.x, ges.pos.y) then
+        self:_navigatePage(-1)
+    end
+    return true
+end
+
+function DrawingCanvas:onMarginRightTap(__, ges)
+    if self._double_tap:register("margin_right", ges.pos.x, ges.pos.y) then
+        self:_navigatePage(1)
+    end
+    return true
+end
+
+--- Hide or show the top strip. The drawing area is always the whole page; only
+-- the strip overlay and what counts as "inside the strip" change.
+function DrawingCanvas:_setChromeHidden(hidden)
+    if self._chrome_hidden == hidden then return end
+    -- What "inside the strip" means is about to change under any stroke in
+    -- progress, so close it first.
+    self:_resetStrokeTracking()
+    self._chrome_hidden = hidden
+    self._double_tap:reset()
+    self:_updateGestureZones()
+    local width = self.dimen.w
+    UIManager:setDirty(self, function()
+        return "ui", Geom:new{x = 0, y = 0, w = width, h = CHROME_HEIGHT}
+    end)
+    if self.on_chrome_hidden_change then self.on_chrome_hidden_change(hidden) end
+    logger.dbg("FastNote canvas: top strip hidden =", hidden)
+end
+
+--- Turn double-tap page turns in the margins on or off.
+function DrawingCanvas:_setMarginPageTurn(enabled)
+    if self._margin_page_turn == enabled then return end
+    self:_resetStrokeTracking()
+    self._margin_page_turn = enabled
+    self._double_tap:reset()
+    self:_updateGestureZones()
+    if self.on_margin_turn_change then self.on_margin_turn_change(enabled) end
+    logger.dbg("FastNote canvas: margin page turns =", enabled)
+end
+
+--- The page-number picker (a SpinWidget).
+function DrawingCanvas:_openPagePicker()
+    logger.dbg("FastNote canvas: page picker")
     local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
     if not ok_sw then return true end
     self:_dialogOpened()
@@ -831,6 +968,19 @@ function DrawingCanvas:onMenuTap()
                  callback = function()
                      close()
                      self:_confirmClearPage()
+                 end},
+            },
+            -- Row 4a0: toolbar and margin gestures
+            {
+                {text = "Hide toolbar",
+                 callback = function()
+                     close()
+                     self:_setChromeHidden(true)
+                 end},
+                {text = self._margin_page_turn and "Margin turns: on" or "Margin turns: off",
+                 callback = function()
+                     close()
+                     self:_setMarginPageTurn(not self._margin_page_turn)
                  end},
             },
             -- Row 4a: page management (insert after / delete this page)
@@ -1007,6 +1157,17 @@ function DrawingCanvas:_showQuickMenu()
                     end,
                 },
             },
+            -- Toolbar row: reachable even while the strip is hidden
+            {
+                {
+                    text = self._chrome_hidden and "Show toolbar" or "Hide toolbar",
+                    callback = function()
+                        UIManager:close(self._quick_menu)
+                        self._quick_menu = nil
+                        self:_setChromeHidden(not self._chrome_hidden)
+                    end,
+                },
+            },
         },
         -- See the equivalent onCloseWidget wrapper on the hamburger
         -- menu (onMenuTap) for why this can't just be close_callback.
@@ -1052,7 +1213,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
     -- point to wherever the gesture ends inside the chrome strip (e.g. a
     -- hamburger-menu tap), producing a spurious line across the page. See
     -- .agents/plans/post-color-fix-followups.md, Bug 1.
-    if y < CHROME_HEIGHT then
+    if self:_inNoInkZone(x, y) then
         if self._stroke_buf.current then
             self._stroke_buf:penUp()
             self._page_dirty = true
@@ -1097,7 +1258,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
         -- (x, y), i.e. today's behavior. See
         -- .agents/notes/finger-draw-input-latency.md, candidate 1.
         self._stroke_x, self._stroke_y = utils.stroke_seed_point(
-            start_x, start_y, x, y, CHROME_HEIGHT, self.dimen.w, self.dimen.h)
+            start_x, start_y, x, y, self:_chromeHeight(), self.dimen.w, self.dimen.h)
         self._stroke_min_x = nil; self._stroke_max_x = nil
         self._stroke_min_y = nil; self._stroke_max_y = nil
         self._ges_start_x  = gsx
@@ -1205,6 +1366,20 @@ function DrawingCanvas:_digToScreen(rx, ry)
     return math.floor(nx * (W-1)), math.floor(ny * (H-1))
 end
 
+--- Height of the top strip right now: zero while it is hidden.
+function DrawingCanvas:_chromeHeight()
+    return page_nav.strip_height(self._chrome_hidden, CHROME_HEIGHT)
+end
+
+--- True when a point must not take ink: inside the top strip, or inside a page
+-- margin while margin page turns are on. The margin rects are cached by
+-- _updateGestureZones, so this is allocation-free on the ~120 Hz pen path.
+function DrawingCanvas:_inNoInkZone(x, y)
+    if y < self:_chromeHeight() then return true end
+    return self._margin_rects ~= nil
+           and page_nav.in_margin(self._margin_rects, x, y) ~= nil
+end
+
 --- The five chrome zones for the current canvas width.
 function DrawingCanvas:_chromeLayout()
     return page_nav.chrome_layout(self.dimen.w, CHROME_HEIGHT, {
@@ -1240,11 +1415,26 @@ end
 -- again after a rotation changes dimen.w.
 function DrawingCanvas:_updateGestureZones()
     local layout = self:_chromeLayout()
-    self:_setTapZone("ExitTap",       layout.exit)
-    self:_setTapZone("MenuTap",       layout.menu)
-    self:_setTapZone("PageNumberTap", layout.number)
-    self:_setTapZone("PrevPageTap",   layout.prev)
-    self:_setTapZone("NextPageTap",   layout.next)
+    local shown  = not self._chrome_hidden
+    -- A hidden strip has no buttons; only the peek band listens, for the
+    -- double tap that shows the strip again.
+    self:_setTapZone("ExitTap",       shown and layout.exit   or nil)
+    self:_setTapZone("MenuTap",       shown and layout.menu   or nil)
+    self:_setTapZone("PageNumberTap", shown and layout.number or nil)
+    self:_setTapZone("PrevPageTap",   shown and layout.prev   or nil)
+    self:_setTapZone("NextPageTap",   shown and layout.next   or nil)
+    self:_setTapZone("TopPeekTap",
+        (not shown) and page_nav.top_peek_zone(self.dimen.w, CHROME_PEEK_H) or nil)
+
+    -- Page margins (opt-in): double tap turns the page.
+    local margins = nil
+    if self._margin_page_turn then
+        margins = page_nav.margin_zones(self.dimen.w, self.dimen.h,
+                                        self:_chromeHeight(), MARGIN_ZONE_W)
+    end
+    self._margin_rects = margins
+    self:_setTapZone("MarginLeftTap",  margins and margins.left  or nil)
+    self:_setTapZone("MarginRightTap", margins and margins.right or nil)
 end
 
 --- Rebuild self._bb from StrokeBuffer's true stroke colors, without
@@ -1396,7 +1586,7 @@ function DrawingCanvas:_runColorSelfTest()
     bar_colors[#bar_colors + 1] = Blitbuffer.COLOR_WHITE
 
     local test_rect = utils.selftest_layout(
-        self.dimen.w, self.dimen.h, CHROME_HEIGHT, #bar_colors,
+        self.dimen.w, self.dimen.h, self:_chromeHeight(), #bar_colors,
         COLOR_SELFTEST_BAR_HEIGHT, COLOR_SELFTEST_WIDTH_FRACTION,
         COLOR_SELFTEST_TOP_MARGIN)
 
@@ -1814,7 +2004,7 @@ function DrawingCanvas:_pollPen()
             local sx, sy = self:_digToScreen(ev.x, ev.y)
 
             -- Chrome strip: abort any open stroke and ignore the event
-            if sy < CHROME_HEIGHT then
+            if self:_inNoInkZone(sx, sy) then
                 if self._last_pen_x then
                     self._stroke_buf:penUp()
                     self._last_pen_x = nil
@@ -2070,6 +2260,7 @@ function DrawingCanvas:_doClose()
     end
     self:_cancelTighten()
     self:_autoSave()
+    self:_cancelPickerTimer()
     -- Close the canvas, then schedule a full e-ink refresh on the next tick
     -- so the underlying UI gets a complete paint cycle without ghosting.
     UIManager:close(self)

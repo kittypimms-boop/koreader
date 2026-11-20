@@ -86,6 +86,8 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
         dark_mode      = state.dark_mode == 1,
         current_color  = state.current_color,
         pressure_floor = state.pressure_floor,
+        chrome_hidden    = state.chrome_hidden == 1,
+        margin_page_turn = state.margin_page_turn == 1,
 
         finger_draw         = cfg.finger_draw,
         init_rotation_mode  = cfg.rotation_mode,
@@ -103,6 +105,16 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
 
         on_dark_mode_change = function(dm)
             state.dark_mode = dm and 1 or 0
+            lib:writeState(state)
+        end,
+
+        on_chrome_hidden_change = function(hidden)
+            state.chrome_hidden = hidden and 1 or 0
+            lib:writeState(state)
+        end,
+
+        on_margin_turn_change = function(enabled)
+            state.margin_page_turn = enabled and 1 or 0
             lib:writeState(state)
         end,
 
