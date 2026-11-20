@@ -461,7 +461,12 @@ function DrawingCanvas:init()
                 if td then
                     self._touchdev = td
                     local PalmReject = require("lib/palmreject")
-                    self._palmreject = PalmReject.new()
+                    -- Wall-clock ms. PalmReject's own default is os.clock(),
+                    -- which is CPU time: it barely advances while the UI is
+                    -- idle, so the pen blackout would outlast its 250 ms.
+                    self._palmreject = PalmReject.new(nil, function()
+                        return time.to_ms(time.now())
+                    end)
                     UIManager:scheduleIn(TOUCH_POLL_INTERVAL, function() self:_pollTouch() end)
                     logger.dbg("FastNote canvas: touch + palm rejection enabled:", touch_path)
                 else
