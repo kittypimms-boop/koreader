@@ -447,6 +447,11 @@ function PenDev:poll(cb)
                     -- BTN_STYLUS/BTN_STYLUS2 value=0 (via
                     -- eraser_button.update_held) clears it.
                     if ev == -1 and slot == self._mt_pen_slot then
+                        -- The chip never sends BTN_TOOL_PEN=0, so this is the
+                        -- only signal that the pen left range. Without it
+                        -- sm.in_proximity sticks and every later sync frame
+                        -- (finger frames included) emits "hover".
+                        self.sm:release_pen(cb)
                         self._mt_pen_slot = nil
                     end
 

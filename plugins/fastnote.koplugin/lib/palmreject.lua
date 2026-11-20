@@ -18,7 +18,9 @@ Rejection rules (applied in order):
 "Proximate" persists for BLACKOUT_MS after a pen "up" event to cover the
 brief gap when the pen lifts between strokes (e.g. writing a "t" cross).
 
-The clock_fn parameter is injectable for testing (default: os.clock in ms).
+The clock_fn parameter is injectable for testing. The default, os.clock() in
+ms, is CPU time, not wall time: it is fine for gate-only tests but wrong for
+the blackout in production, so callers on a device pass a monotonic wall clock.
 --]]--
 
 local PalmReject = {}
@@ -49,12 +51,13 @@ end
 
 --- Feed a high-level pen event (from pen_statemachine).
 -- Updates internal proximity state.
--- @param ev  table  {type="down"|"move"|"hover"|"up", ...}
+-- @param ev  table  {type="down"|"move"|"hover"|"up"|"leave", ...}
+--                    "leave" = the pen left range (see pen_statemachine).
 function PalmReject:onPenEvent(ev)
     if ev.type == "down" or ev.type == "move" or ev.type == "hover" then
         self._pen_proximate = true
         self._pen_up_at     = nil
-    elseif ev.type == "up" then
+    elseif ev.type == "up" or ev.type == "leave" then
         -- Keep proximate flag set; start blackout timer.
         self._pen_up_at = self._clock()
     end
