@@ -40,3 +40,40 @@ in `init()` — **not** in `onShow`. They are always registered regardless of
 runtime and return early. This lets `finger_draw` be toggled live from the
 menu without re-registering zones (which would require closing and
 reopening the canvas).
+
+## Chrome strip zones come from one layout
+
+The five chrome taps (exit, previous page, page number, next page, menu) are
+laid out by `lib/page_nav.lua` `chrome_layout`, through
+`DrawingCanvas:_chromeLayout()` and `_updateGestureZones()`. `init()` and
+`_reinitAtRotation()` both call `_updateGestureZones()`, so a zone never needs
+its geometry written down a second time.
+
+- The zones are disjoint, with 40 px dead gutters beside exit and menu, so a tap
+  that misses an arrow cannot hit the expensive neighbours. Do not give any
+  chrome handler an overlapping range: `ges_events` iteration order is not
+  defined, so an overlap would be ambiguous.
+- On a width too narrow for usable arrows, `chrome_layout` returns no `prev` or
+  `next` and `_setTapZone` removes those two ges_events.
+- `_setTapZone` mutates existing ranges in place (the `self.dimen` mutation
+  rule above); it does not replace the range objects.
+- Every chrome handler returns `true`, including a tap on a disabled arrow, so a
+  chrome tap is consumed and never falls through to drawing.
+- `CHROME_HEIGHT` is 106 px (9 mm at 300 dpi). The pen, raw touch and gesture
+  guards all read the constant.
+
+## Page turns reset state and repaint partially
+
+Every page change (arrows, hardware keys, jump dialog, insert, delete) goes
+through `_saveBeforeTurn()` then `_applyPageNavigation()`.
+
+- `_saveBeforeTurn()` closes a stroke in progress, cancels the colour-settle
+  (tighten) timer, then saves. If the save fails the turn is abandoned with a
+  message, because continuing replaces the stroke buffer and loses the page.
+- `_applyPageNavigation()` resets all per-stroke tracking before swapping the
+  buffer, so the first point on the new page never connects to the old page's
+  last point.
+- The repaint uses `PAGE_TURN_REFRESH` (`"partial"`): no flash, ghosting is
+  cleared, colour is kept. Do not use `"fast"` or `"a2"` for page content.
+- A dirty page is saved even when it is now empty, so erasing a page's last
+  stroke overwrites the old SVG instead of letting it come back.

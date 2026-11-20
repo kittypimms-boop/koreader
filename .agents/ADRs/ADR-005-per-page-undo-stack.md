@@ -27,3 +27,8 @@ discards the old buffer and its undo history entirely.
 - **If cross-page undo is ever needed:** each page's `StrokeBuffer` would need
   to be retained in a `Notebook` object and swapped on page turn. Not worth the
   complexity for current use cases.
+- **One-tap page turns make this more visible:** with previous/next tap zones in
+  the chrome, flipping between pages is cheap, so undo history is lost across a
+  turn more often than with the page-number dialog. The decision stands: undo is
+  per page and does not survive a page change. Revisit only if device use shows
+  people flipping back to undo.
