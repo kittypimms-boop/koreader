@@ -99,6 +99,58 @@ function M.hit_test(layout, x, y)
     return nil
 end
 
+--- Height the top strip occupies right now: zero when it is hidden, so the
+-- drawing area and every "inside the strip" guard use the whole page.
+function M.strip_height(hidden, full_h)
+    if hidden then return 0 end
+    return full_h
+end
+
+--- The band along the top edge that takes the double tap which shows a hidden
+-- strip. It spans the full width and does not stop ink: it only decides what a
+-- tap gesture means there.
+function M.top_peek_zone(screen_w, peek_h)
+    return {x = 0, y = 0, w = screen_w, h = peek_h}
+end
+
+--- The small visible tab drawn at the top edge while the strip is hidden.
+-- Centred horizontally; never wider than the screen.
+function M.tab_rect(screen_w, tab_w, tab_h)
+    local width = math.min(tab_w, screen_w)
+    return {x = math.floor((screen_w - width) / 2), y = 0, w = width, h = tab_h}
+end
+
+--- The two page-margin strips where a double tap turns the page.
+-- @int screen_w, screen_h  Canvas size in pixels.
+-- @int top_h               Height of the top strip (0 when hidden); the margin
+--                          strips start below it.
+-- @int margin_w            Width of each margin strip.
+-- @treturn table|nil  {left, right} rects, or nil when the screen is too narrow
+--                     to leave a drawing area between them.
+function M.margin_zones(screen_w, screen_h, top_h, margin_w)
+    if screen_w < 4 * margin_w then return nil end
+    local height = screen_h - top_h
+    return {
+        left  = {x = 0,                  y = top_h, w = margin_w, h = height},
+        right = {x = screen_w - margin_w, y = top_h, w = margin_w, h = height},
+    }
+end
+
+--- Which margin strip contains a point.
+-- @treturn string|nil  "margin_left" | "margin_right", or nil in the drawing
+--                      area, above the strips, or when there are no margins.
+function M.in_margin(zones, x, y)
+    if not zones then return nil end
+    for __, entry in ipairs({{"margin_left", zones.left}, {"margin_right", zones.right}}) do
+        local name, zone = entry[1], entry[2]
+        if x >= zone.x and x < zone.x + zone.w
+                and y >= zone.y and y < zone.y + zone.h then
+            return name
+        end
+    end
+    return nil
+end
+
 --- What the previous and next arrows offer on the current page.
 -- @int     idx             Current page (1-based).
 -- @int     count           Number of pages.
