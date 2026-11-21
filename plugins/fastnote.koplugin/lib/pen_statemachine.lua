@@ -95,6 +95,27 @@ function M:feed_key(code, value, cb)
     end
 end
 
+--- Pen left the digitizer's range, regardless of which tool it was.
+-- The Elan combo chip never sends BTN_TOOL_PEN=0; the pen leaves only as
+-- ABS_MT_TRACKING_ID=-1 on its MT slot, so pendev.lua calls this instead of
+-- feed_key(BTN_TOOL_*, 0). Clears proximity and the eraser tool latch, and
+-- closes a stroke still open (pressure never dropped before the release).
+-- @func cb  Optional callback; receives {type = "up"} if a stroke was open,
+--           then {type = "leave"} if the pen was in range. "leave" lets palm
+--           rejection start its blackout even when the pen only hovered and
+--           so never produced an "up".
+function M:release_pen(cb)
+    local was_in_range = self.in_proximity
+    self.in_proximity  = false
+    self.tool          = "pen"
+    self._just_downed  = false
+    if self.pen_down then
+        self.pen_down = false
+        if cb then cb({type = "up"}) end
+    end
+    if was_in_range and cb then cb({type = "leave"}) end
+end
+
 --- Feed an EV_ABS event (coordinate / pressure update).
 -- @int code   ABS_X, ABS_Y, or ABS_PRESSURE
 -- @int value  Raw axis value from the digitizer

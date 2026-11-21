@@ -26,15 +26,22 @@ local MAX_SIZE = 2 * 1024 * 1024   -- 2 MB
 
 --- Create (or re-open for append) an event log at the given path.
 -- @string path  absolute path to the log file
+-- @table  opts  optional: clock_fn, a function returning the timestamp to write
+--               (the canvas passes monotonic milliseconds so lines can be
+--               ordered finely; without it the timestamp is os.time() seconds)
 -- @return EventLog instance, or nil + error string on failure
-function EventLog.new(path)
+function EventLog.new(path, opts)
     local file, err = io.open(path, "a")
     if not file then
         return nil, "eventlog: cannot open " .. path .. ": " .. (err or "unknown")
     end
     -- Line-buffered: each write flushes at the newline so tail -F shows events live.
     file:setvbuf("line")
-    return setmetatable({ _path = path, _file = file }, EventLog)
+    return setmetatable({
+        _path = path,
+        _file = file,
+        _clock_fn = opts and opts.clock_fn or nil,
+    }, EventLog)
 end
 
 --- Rotate: close current handle, rename to .1 (overwriting), reopen fresh.
@@ -57,7 +64,7 @@ end
 
 --- Write one log line.
 -- Checks file size before writing; rotates if >= MAX_SIZE.
--- @string level       "RAW" or "DEC"
+-- @string level       "RAW", "DEC", or a diagnostic tag such as "GES", "TCH", "SB", "INFO"
 -- @string ev_type_name  event type name ("EV_KEY", "EV_ABS", "EV_SYN", or decoded type)
 -- @string code_name   code name or formatted field string
 -- @string|number value  numeric value or formatted value string
@@ -71,8 +78,9 @@ function EventLog:write(level, ev_type_name, code_name, value)
         self:_rotate()
     end
 
+    local stamp = self._clock_fn and self._clock_fn() or os.time()
     self._file:write(string.format("%d  %s  %s  %s  %s\n",
-        os.time(),
+        math.floor(stamp),
         level,
         ev_type_name,
         tostring(code_name),

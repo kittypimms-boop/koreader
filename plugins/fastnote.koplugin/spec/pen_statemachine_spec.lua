@@ -199,6 +199,79 @@ describe("pen_statemachine", function()
 
     end)
 
+    -- ── release_pen ──────────────────────────────────────────────────────────
+    --
+    -- The Elan combo chip never sends BTN_TOOL_PEN=0: the pen leaves
+    -- proximity only as ABS_MT_TRACKING_ID=-1 on its MT slot. pendev.lua calls
+    -- release_pen() at that point. Without it in_proximity stays true for the
+    -- rest of the session and feed_syn emits "hover" on every frame, which
+    -- keeps palm rejection permanently engaged.
+
+    describe("release_pen", function()
+
+        it("clears proximity so later sync frames emit nothing", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            sm:release_pen()
+            local evs = collect(function(cb) sm:feed_syn(cb) end)
+            assert.is_false(sm.in_proximity)
+            assert.equals(0, #evs)
+        end)
+
+        it("emits 'up' and clears pen_down when the pen is still touching", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            sm:feed_key(BTN_TOUCH, 1)
+            sm:feed_syn()
+            local evs = collect(function(cb) sm:release_pen(cb) end)
+            assert.equals(2, #evs)
+            assert.equals("up",    evs[1].type)
+            assert.equals("leave", evs[2].type)
+            assert.is_false(sm.pen_down)
+        end)
+
+        it("emits 'leave' when the pen was only hovering", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            local evs = collect(function(cb) sm:release_pen(cb) end)
+            assert.equals(1, #evs)
+            assert.equals("leave", evs[1].type)
+        end)
+
+        it("emits nothing when the pen was never in range", function()
+            local sm = SM:new()
+            local evs = collect(function(cb) sm:release_pen(cb) end)
+            assert.equals(0, #evs)
+        end)
+
+        it("resets the eraser tool latch", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_RUBBER, 1)
+            sm:release_pen()
+            assert.equals("pen", sm.tool)
+        end)
+
+        it("drops a pending 'down' that never reached a sync frame", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            sm:feed_key(BTN_TOUCH, 1)      -- primes "down" for the next sync
+            sm:release_pen()
+            local evs = collect(function(cb) sm:feed_syn(cb) end)
+            assert.equals(0, #evs)
+        end)
+
+        it("allows a clean second approach after release", function()
+            local sm = SM:new()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            sm:release_pen()
+            sm:feed_key(BTN_TOOL_PEN, 1)
+            local evs = collect(function(cb) sm:feed_syn(cb) end)
+            assert.equals(1, #evs)
+            assert.equals("hover", evs[1].type)
+        end)
+
+    end)
+
     -- ── BTN_TOUCH ────────────────────────────────────────────────────────────
 
     describe("BTN_TOUCH", function()

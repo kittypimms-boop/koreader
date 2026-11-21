@@ -42,11 +42,46 @@ local logger            = require("logger")
 local shell_quote       = require("lib/shell_quote")
 local time              = require("ui/time")
 local utils             = require("lib/canvas_utils")
+local page_nav          = require("lib/page_nav")
+local DoubleTap         = require("lib/double_tap")
 
 -- Chrome strip (Stage 7)
-local CHROME_HEIGHT     = 75   -- top strip height in pixels
+-- 106 px is 9 mm at 300 dpi: a comfortable minimum tap target, so the page
+-- arrows can be hit without looking. Everything that guards the strip reads
+-- this constant.
+local CHROME_HEIGHT     = 106  -- top strip height in pixels
 local CHROME_EXIT_W     = 80   -- width of exit tap area (left)
 local CHROME_TOOLS_W    = 80   -- width of tools tap area (right)
+
+-- Debug log: a step between consecutive points of one stroke larger than this
+-- is logged as a JUMP (normal finger speed at 60 Hz is under about 40 px).
+local JUMP_LOG_PX = 120
+
+-- Page-turn repaint. "partial" is a one-shot content repaint: no flash, the
+-- ghosting of the previous page is cleared, colour is kept. Not "full" (a
+-- flash on every turn) and not "fast"/"a2" (colour would be lost). A single
+-- constant so it can be tuned on the device.
+local PAGE_TURN_REFRESH = "partial"
+
+-- Hidden top strip. While it is hidden a small tab shows the page number, and a
+-- double tap in the top peek band brings the strip back.
+local CHROME_PEEK_H = 80       -- height of the band whose double tap shows the strip
+local CHROME_TAB_W  = 240      -- visible tab, width
+local CHROME_TAB_H  = 40       -- visible tab, height
+
+-- Page margins: a double tap in a margin strip turns the page (opt-in).
+local MARGIN_ZONE_W = 70       -- width of each strip, 5.9 mm at 300 dpi
+
+-- A lone tap on the page number opens the picker only after this long, so a
+-- second tap can toggle the strip instead.
+local DOUBLE_TAP_WINDOW_MS = 350
+local PICKER_DELAY_S       = 0.36
+
+-- Chrome page-arrow glyphs (pixels)
+local ARROW_HALF_HEIGHT = 20   -- chevron arm length, vertical
+local ARROW_DEPTH       = 12   -- chevron depth, horizontal
+local ARROW_STROKE      = 4
+local ARROW_INSET       = 70   -- glyph centre distance from the number zone
 
 -- Default stroke appearance
 local DEFAULT_LINE_WIDTH = 4
@@ -127,6 +162,19 @@ local DrawingCanvas = InputContainer:extend{
     -- Jump to an arbitrary page number (the page-picker dialog). Same
     -- return contract as on_page_forward/on_page_back.
     on_page_jump       = nil,
+    -- Insert a blank page after the given page index and open it. Returns
+    -- (new_page_idx, total_pages, path).
+    on_page_insert     = nil,
+    -- Remove the given page (its SVG is kept recoverable) and open the page
+    -- that takes its place. Returns (new_page_idx, total_pages, path,
+    -- kept_path_or_nil), or nil when the removal is refused.
+    on_page_remove     = nil,
+
+    -- Top strip and margin preferences (persisted by the caller, like dark mode).
+    chrome_hidden            = false,  -- start with the top strip hidden
+    margin_page_turn         = false,  -- double tap in a margin turns the page
+    on_chrome_hidden_change  = nil,    -- called with (bool) when the strip is hidden or shown
+    on_margin_turn_change    = nil,    -- called with (bool) when margin page turns toggle
 
     _bb           = nil,           -- BlitBuffer (display cache)
     _stroke_buf   = nil,           -- StrokeBuffer (source of truth, Stage 4)
@@ -268,6 +316,12 @@ function DrawingCanvas:init()
     self._dark_mode      = self.dark_mode == true
     self._current_color  = self.current_color or DEFAULT_COLOR
     self._pressure_floor = self.pressure_floor or 200
+    self._chrome_hidden    = self.chrome_hidden == true
+    self._margin_page_turn = self.margin_page_turn == true
+    self._double_tap = DoubleTap.new({
+        window_ms = DOUBLE_TAP_WINDOW_MS,
+        clock_fn  = function() return time.to_ms(time.now()) end,
+    })
 
     -- Resolve tighten-pass config overrides. tighten_delay is a number, so
     -- `or` is safe here (a number is never falsy). tighten_enabled is a
@@ -380,40 +434,10 @@ function DrawingCanvas:init()
 
     -- ── Gesture zones ──────────────────────────────────────────────────────
 
-    -- Exit zone: left portion of chrome strip
-    self.ges_events.ExitTap = {
-        GestureRange:new{
-            ges   = "tap",
-            range = Geom:new{x=0, y=0, w=CHROME_EXIT_W, h=CHROME_HEIGHT},
-        },
-    }
-
-    -- Tools / menu: right portion of chrome strip
-    self.ges_events.MenuTap = {
-        GestureRange:new{
-            ges   = "tap",
-            range = Geom:new{
-                x = self.dimen.w - CHROME_TOOLS_W,
-                y = 0,
-                w = CHROME_TOOLS_W,
-                h = CHROME_HEIGHT,
-            },
-        },
-    }
-
-    -- Page number: center portion of chrome strip, between the exit and
-    -- tools zones -- tap to open the page picker (onPageNumberTap).
-    self.ges_events.PageNumberTap = {
-        GestureRange:new{
-            ges   = "tap",
-            range = Geom:new{
-                x = CHROME_EXIT_W,
-                y = 0,
-                w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W,
-                h = CHROME_HEIGHT,
-            },
-        },
-    }
+    -- Chrome strip zones, all derived from one layout so they stay disjoint
+    -- (see lib/page_nav.lua): exit | prev | page number | next | menu, with
+    -- dead gutters beside exit and menu.
+    self:_updateGestureZones()
 
     -- Drawing gesture zones: always registered.
     -- On device (use_raw_input=true), onDrawStroke returns early unless
@@ -461,7 +485,12 @@ function DrawingCanvas:init()
                 if td then
                     self._touchdev = td
                     local PalmReject = require("lib/palmreject")
-                    self._palmreject = PalmReject.new()
+                    -- Wall-clock ms. PalmReject's own default is os.clock(),
+                    -- which is CPU time: it barely advances while the UI is
+                    -- idle, so the pen blackout would outlast its 250 ms.
+                    self._palmreject = PalmReject.new(nil, function()
+                        return time.to_ms(time.now())
+                    end)
                     UIManager:scheduleIn(TOUCH_POLL_INTERVAL, function() self:_pollTouch() end)
                     logger.dbg("FastNote canvas: touch + palm rejection enabled:", touch_path)
                 else
@@ -490,6 +519,7 @@ function DrawingCanvas:onCloseWidget()
     -- teardown.
     if self._event_log then
         PenDev.raw_log_fn = nil
+        StrokeBuffer.trace_fn = nil
         self._event_log:close()
         self._event_log = nil
     end
@@ -539,6 +569,7 @@ function DrawingCanvas:_toggleInputLog()
     if self._event_log then
         -- Turning OFF.
         PenDev.raw_log_fn = nil
+        StrokeBuffer.trace_fn = nil
         self._event_log:close()
         self._event_log = nil
         logger.dbg("FastNote canvas: debug input log disabled")
@@ -553,7 +584,11 @@ function DrawingCanvas:_toggleInputLog()
     os.execute("mkdir -p " .. shell_quote.quote(log_dir))
     local log_path = log_dir .. "/input.log"
 
-    local log, err = EventLog.new(log_path)
+    -- Millisecond monotonic timestamps, so lines from the pen, touch, gesture
+    -- and stroke-buffer paths can be ordered against each other.
+    local log, err = EventLog.new(log_path, {
+        clock_fn = function() return time.to_ms(time.now()) end,
+    })
     if not log then
         logger.warn("FastNote canvas: could not open debug input log:", err)
         return
@@ -563,7 +598,53 @@ function DrawingCanvas:_toggleInputLog()
     PenDev.raw_log_fn = function(level, type_name, code_name, value)
         log:write(level, type_name, code_name, value)
     end
+    StrokeBuffer.trace_fn = self:_makeStrokeTrace(log)
+
+    -- One-off context for reading the rest of the log.
+    local pen_path   = self._pendev   and self._pendev.path
+    local touch_path = self._touchdev and self._touchdev.path
+    log:write("INFO", "devices",
+        "pen=" .. tostring(pen_path) .. " touch=" .. tostring(touch_path),
+        "same_node=" .. tostring(pen_path ~= nil and pen_path == touch_path))
+    log:write("INFO", "mode",
+        "use_raw_input=" .. tostring(self.use_raw_input),
+        "finger_draw=" .. tostring(self.finger_draw))
     logger.dbg("FastNote canvas: debug input log enabled at", log_path)
+end
+
+--- Build the stroke-buffer trace used while the debug log is on.
+-- Logs only what separates the input paths: an operation by a different owner
+-- than the one whose stroke is open (cross-path interference), a down that
+-- replaces an open stroke, and a JUMP between consecutive points of a stroke.
+function DrawingCanvas:_makeStrokeTrace(log)
+    local last_x, last_y
+    return function(op, x, y, owner, open_owner)
+        local foreign = owner ~= nil and open_owner ~= nil and owner ~= open_owner
+        local who     = string.format("owner=%s open=%s", tostring(owner), tostring(open_owner))
+        if op == "down" then
+            if open_owner ~= nil then
+                log:write("SB", "down", who, "replaces-open-stroke")
+            end
+            last_x, last_y = x, y
+        elseif op == "move" then
+            if foreign then
+                log:write("SB", "move", who, string.format("x=%.0f y=%.0f", x, y))
+            end
+            if last_x then
+                local dx, dy = x - last_x, y - last_y
+                if dx * dx + dy * dy > JUMP_LOG_PX * JUMP_LOG_PX then
+                    log:write("SB", "JUMP", "owner=" .. tostring(owner),
+                        string.format("from=%.0f,%.0f to=%.0f,%.0f", last_x, last_y, x, y))
+                end
+            end
+            last_x, last_y = x, y
+        elseif op == "up" then
+            if foreign then
+                log:write("SB", "up", who, "other-owner-commit")
+            end
+            last_x, last_y = nil, nil
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -582,41 +663,137 @@ end
 function DrawingCanvas:_paintChrome(bb, x, y)
     local W = self.dimen.w
 
+    if self._chrome_hidden then
+        self:_paintChromeTab(bb, x, y)
+        return
+    end
+
     -- White background
     bb:paintRect(x, y, W, CHROME_HEIGHT, Blitbuffer.COLOR_WHITE)
     -- 2 px bottom border
     bb:paintRect(x, y + CHROME_HEIGHT - 2, W, 2, Blitbuffer.COLOR_BLACK)
 
-    -- Exit "×": two diagonal lines in the left zone
+    -- Exit "×": two diagonal lines in the left zone, centred in the strip
     local pad = 16
     local sz  = CHROME_HEIGHT - pad * 2
-    local ex, ey = x + pad, y + pad
+    sz = math.min(sz, 44)
+    local ex  = x + math.floor((CHROME_EXIT_W - sz) / 2)
+    local ey  = y + math.floor((CHROME_HEIGHT - sz) / 2)
     utils.drawLine(bb, ex, ey, ex + sz, ey + sz, 3, Blitbuffer.COLOR_BLACK)
     utils.drawLine(bb, ex + sz, ey, ex, ey + sz, 3, Blitbuffer.COLOR_BLACK)
 
-    -- Page indicator: "n / N" centered (attempt RenderText; skip silently if unavailable)
+    local layout = self:_chromeLayout()
+    local cy     = y + math.floor(CHROME_HEIGHT / 2)
+
+    -- Page indicator: "n / N" centred in the number zone (attempt
+    -- RenderText; skip silently if unavailable)
+    local ok_f, Font = pcall(require, "ui/font")
+    local ok_r, RT   = pcall(require, "ui/rendertext")
+    if ok_f and ok_r then
+        local face = Font:getFace("cfont", 28)
+        if face then
+            local page_str = page_nav.format_indicator(self.page_index, self.page_count)
+            -- Measure the real width; fall back to an estimate (~16 px per
+            -- char at size 28) if the measurement is unavailable.
+            local tw = #page_str * 16
+            local ok_s, size = pcall(RT.sizeUtf8Text, RT, 0, W, face, page_str, true, false)
+            if ok_s and type(size) == "table" and type(size.x) == "number" then
+                tw = size.x
+            end
+            local tx = x + layout.number.x + math.floor((layout.number.w - tw) / 2)
+            local ty = cy + 10   -- baseline: roughly centred on the strip
+            RT:renderUtf8Text(bb, tx, ty, face, page_str)
+        end
+    end
+
+    -- Previous / next arrows (omitted when the strip is too narrow for them)
+    if layout.prev and layout.next then
+        local arrows = page_nav.arrow_state(self.page_index, self.page_count,
+                                            self:_forwardNavBlocked())
+        self:_paintChromeArrow(bb, x, cy, layout.prev, "prev", arrows.prev)
+        self:_paintChromeArrow(bb, x, cy, layout.next, "next", arrows.next)
+    end
+
+    -- Tools hamburger (right zone): three horizontal bars, centred
+    local bar_w = 36
+    local bar_h = 4
+    local bar_gap = 14
+    local bx    = x + W - CHROME_TOOLS_W + math.floor((CHROME_TOOLS_W - bar_w) / 2)
+    local by0   = y + math.floor((CHROME_HEIGHT - (2 * bar_gap + bar_h)) / 2)
+    bb:paintRect(bx, by0,               bar_w, bar_h, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(bx, by0 + bar_gap,     bar_w, bar_h, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(bx, by0 + 2 * bar_gap, bar_w, bar_h, Blitbuffer.COLOR_BLACK)
+end
+
+--- Draw one page arrow beside the page number.
+-- @param side   "prev" or "next"
+-- @param state  "enabled" | "disabled" | "next" | "create" (page_nav.arrow_state);
+--               "create" draws a "+", the others a chevron. Disabled is grey.
+function DrawingCanvas:_paintChromeArrow(bb, x, cy, rect, side, state)
+    local color = Blitbuffer.COLOR_BLACK
+    if state == "disabled" then
+        color = Blitbuffer.COLOR_GRAY_5 or Blitbuffer.COLOR_GRAY
+                or Blitbuffer.COLOR_BLACK
+    end
+
+    -- Sit against the number zone so "‹ 3 / 12 ›" reads as one control.
+    local cx
+    if side == "prev" then
+        cx = x + rect.x + rect.w - ARROW_INSET
+    else
+        cx = x + rect.x + ARROW_INSET
+    end
+
+    if state == "create" then
+        utils.drawLine(bb, cx - ARROW_HALF_HEIGHT, cy, cx + ARROW_HALF_HEIGHT, cy,
+                       ARROW_STROKE, color)
+        utils.drawLine(bb, cx, cy - ARROW_HALF_HEIGHT, cx, cy + ARROW_HALF_HEIGHT,
+                       ARROW_STROKE, color)
+        return
+    end
+
+    -- Chevron: the tip points away from the number zone.
+    local tip_dx = (side == "prev") and -ARROW_DEPTH or ARROW_DEPTH
+    utils.drawLine(bb, cx + tip_dx, cy, cx - tip_dx, cy - ARROW_HALF_HEIGHT,
+                   ARROW_STROKE, color)
+    utils.drawLine(bb, cx + tip_dx, cy, cx - tip_dx, cy + ARROW_HALF_HEIGHT,
+                   ARROW_STROKE, color)
+end
+
+--- The small tab shown at the top edge while the strip is hidden: the page
+-- number and a down chevron. A double tap anywhere in the top peek band (wider
+-- than the tab) shows the strip again.
+function DrawingCanvas:_paintChromeTab(bb, x, y)
+    local tab = page_nav.tab_rect(self.dimen.w, CHROME_TAB_W, CHROME_TAB_H)
+    local tx, ty = x + tab.x, y + tab.y
+    bb:paintRect(tx, ty, tab.w, tab.h, Blitbuffer.COLOR_WHITE)
+    bb:paintRect(tx, ty + tab.h - 2, tab.w, 2, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(tx, ty, 2, tab.h, Blitbuffer.COLOR_BLACK)
+    bb:paintRect(tx + tab.w - 2, ty, 2, tab.h, Blitbuffer.COLOR_BLACK)
+
     local ok_f, Font = pcall(require, "ui/font")
     local ok_r, RT   = pcall(require, "ui/rendertext")
     if ok_f and ok_r then
         local face = Font:getFace("cfont", 22)
         if face then
-            local page_str = tostring(self.page_index) .. " / " .. tostring(self.page_count)
-            -- Estimate text width (≈ 13 px per char at size 22)
-            local tw  = #page_str * 13
-            local tx  = x + math.floor((W - tw) / 2)
-            local ty  = y + CHROME_HEIGHT - 16  -- baseline
-            RT:renderUtf8Text(bb, tx, ty, face, page_str)
+            local text = page_nav.format_indicator(self.page_index, self.page_count)
+            RT:renderUtf8Text(bb, tx + 18, ty + tab.h - 11, face, text)
         end
     end
+    -- Down chevron at the right end of the tab
+    local cx, cy = tx + tab.w - 30, ty + math.floor(tab.h / 2)
+    utils.drawLine(bb, cx - 10, cy - 5, cx, cy + 5, 3, Blitbuffer.COLOR_BLACK)
+    utils.drawLine(bb, cx + 10, cy - 5, cx, cy + 5, 3, Blitbuffer.COLOR_BLACK)
+end
 
-    -- Tools hamburger (right zone): three horizontal bars
-    local bar_w = 36
-    local bar_h = 4
-    local bx    = x + W - CHROME_TOOLS_W + math.floor((CHROME_TOOLS_W - bar_w) / 2)
-    local by0   = y + 12
-    bb:paintRect(bx, by0,      bar_w, bar_h, Blitbuffer.COLOR_BLACK)
-    bb:paintRect(bx, by0 + 14, bar_w, bar_h, Blitbuffer.COLOR_BLACK)
-    bb:paintRect(bx, by0 + 28, bar_w, bar_h, Blitbuffer.COLOR_BLACK)
+--- True when a forward page turn from here would be refused (a blank page
+-- right after another blank page). Shared by the arrows and _navigatePage.
+function DrawingCanvas:_forwardNavBlocked()
+    -- The chrome can paint before the stroke buffer exists; treat that as blank.
+    local strokes = self._stroke_buf and self._stroke_buf.strokes
+    local current_page_is_blank = (not strokes) or #strokes == 0
+    return utils.should_block_forward_nav(self._prev_page_was_blank,
+                                          current_page_is_blank)
 end
 
 -- ---------------------------------------------------------------------------
@@ -632,9 +809,88 @@ function DrawingCanvas:onExitTap(_, ges)
     end
 end
 
---- Page picker: tap the "n / N" readout to jump to an arbitrary page.
-function DrawingCanvas:onPageNumberTap()
-    logger.dbg("FastNote canvas: page number tap")
+--- Tap on the "n / N" readout. A double tap hides the top strip. A lone tap
+-- opens the page picker, but only after the double-tap window has passed, so
+-- the first tap of a double tap does not pop the picker up under the second.
+function DrawingCanvas:onPageNumberTap(__, ges)
+    self:_cancelPickerTimer()
+    if self._double_tap:register("top", ges.pos.x, ges.pos.y) then
+        self:_setChromeHidden(true)
+        return true
+    end
+    self._picker_fn = function()
+        self._picker_fn = nil
+        self:_openPagePicker()
+    end
+    UIManager:scheduleIn(PICKER_DELAY_S, self._picker_fn)
+    return true
+end
+
+--- Cancel a page-picker open that is waiting out the double-tap window.
+function DrawingCanvas:_cancelPickerTimer()
+    if self._picker_fn then
+        UIManager:unschedule(self._picker_fn)
+        self._picker_fn = nil
+    end
+end
+
+--- Double tap in the top peek band while the strip is hidden shows it again.
+-- A lone tap there is consumed and does nothing.
+function DrawingCanvas:onTopPeekTap(__, ges)
+    if self._double_tap:register("top", ges.pos.x, ges.pos.y) then
+        self:_setChromeHidden(false)
+    end
+    return true
+end
+
+--- Double tap in a page margin turns the page: left strip back, right forward.
+-- A lone tap is consumed. The margin strips take no ink while this is on.
+function DrawingCanvas:onMarginLeftTap(__, ges)
+    if self._double_tap:register("margin_left", ges.pos.x, ges.pos.y) then
+        self:_navigatePage(-1)
+    end
+    return true
+end
+
+function DrawingCanvas:onMarginRightTap(__, ges)
+    if self._double_tap:register("margin_right", ges.pos.x, ges.pos.y) then
+        self:_navigatePage(1)
+    end
+    return true
+end
+
+--- Hide or show the top strip. The drawing area is always the whole page; only
+-- the strip overlay and what counts as "inside the strip" change.
+function DrawingCanvas:_setChromeHidden(hidden)
+    if self._chrome_hidden == hidden then return end
+    -- What "inside the strip" means is about to change under any stroke in
+    -- progress, so close it first.
+    self:_resetStrokeTracking()
+    self._chrome_hidden = hidden
+    self._double_tap:reset()
+    self:_updateGestureZones()
+    local width = self.dimen.w
+    UIManager:setDirty(self, function()
+        return "ui", Geom:new{x = 0, y = 0, w = width, h = CHROME_HEIGHT}
+    end)
+    if self.on_chrome_hidden_change then self.on_chrome_hidden_change(hidden) end
+    logger.dbg("FastNote canvas: top strip hidden =", hidden)
+end
+
+--- Turn double-tap page turns in the margins on or off.
+function DrawingCanvas:_setMarginPageTurn(enabled)
+    if self._margin_page_turn == enabled then return end
+    self:_resetStrokeTracking()
+    self._margin_page_turn = enabled
+    self._double_tap:reset()
+    self:_updateGestureZones()
+    if self.on_margin_turn_change then self.on_margin_turn_change(enabled) end
+    logger.dbg("FastNote canvas: margin page turns =", enabled)
+end
+
+--- The page-number picker (a SpinWidget).
+function DrawingCanvas:_openPagePicker()
+    logger.dbg("FastNote canvas: page picker")
     local ok_sw, SpinWidget = pcall(require, "ui/widget/spinwidget")
     if not ok_sw then return true end
     self:_dialogOpened()
@@ -650,6 +906,21 @@ function DrawingCanvas:onPageNumberTap()
         end,
         close_callback = function() self:_dialogClosed() end,
     })
+    return true
+end
+
+--- One page back. A tap on page 1 is consumed and does nothing.
+function DrawingCanvas:onPrevPageTap()
+    logger.dbg("FastNote canvas: previous-page tap")
+    self:_navigatePage(-1)
+    return true
+end
+
+--- One page forward; on the last page this creates a new page unless the
+-- blank-page guard refuses (see _navigatePage).
+function DrawingCanvas:onNextPageTap()
+    logger.dbg("FastNote canvas: next-page tap")
+    self:_navigatePage(1)
     return true
 end
 
@@ -758,6 +1029,32 @@ function DrawingCanvas:onMenuTap()
                  callback = function()
                      close()
                      self:_confirmClearPage()
+                 end},
+            },
+            -- Row 4a0: toolbar and margin gestures
+            {
+                {text = "Hide toolbar",
+                 callback = function()
+                     close()
+                     self:_setChromeHidden(true)
+                 end},
+                {text = self._margin_page_turn and "Margin turns: on" or "Margin turns: off",
+                 callback = function()
+                     close()
+                     self:_setMarginPageTurn(not self._margin_page_turn)
+                 end},
+            },
+            -- Row 4a: page management (insert after / delete this page)
+            {
+                {text = "Insert page after",
+                 callback = function()
+                     close()
+                     self:_insertPageAfterCurrent()
+                 end},
+                {text = "Delete page",
+                 callback = function()
+                     close()
+                     self:_confirmRemovePage()
                  end},
             },
             -- Row 4b: live color ink toggle (flag-gated; session-only, same
@@ -921,6 +1218,17 @@ function DrawingCanvas:_showQuickMenu()
                     end,
                 },
             },
+            -- Toolbar row: reachable even while the strip is hidden
+            {
+                {
+                    text = self._chrome_hidden and "Show toolbar" or "Hide toolbar",
+                    callback = function()
+                        UIManager:close(self._quick_menu)
+                        self._quick_menu = nil
+                        self:_setChromeHidden(not self._chrome_hidden)
+                    end,
+                },
+            },
         },
         -- See the equivalent onCloseWidget wrapper on the hamburger
         -- menu (onMenuTap) for why this can't just be close_callback.
@@ -960,15 +1268,23 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local x = math.floor(ges.pos.x)
     local y = math.floor(ges.pos.y)
 
+    if self._event_log then
+        self._event_log:write("GES", "pan",
+            string.format("pos=%d,%d", x, y),
+            string.format("start=%s last=%s,%s",
+                ges.start_pos and string.format("%d,%d", ges.start_pos.x, ges.start_pos.y) or "nil",
+                tostring(self._stroke_x), tostring(self._stroke_y)))
+    end
+
     -- Ignore strokes in the chrome strip. Close any open stroke first --
     -- otherwise a later onDrawStrokeEnd (which does not check
     -- CHROME_HEIGHT) draws a final segment from the stroke's last real
     -- point to wherever the gesture ends inside the chrome strip (e.g. a
     -- hamburger-menu tap), producing a spurious line across the page. See
     -- .agents/plans/post-color-fix-followups.md, Bug 1.
-    if y < CHROME_HEIGHT then
+    if self:_inNoInkZone(x, y) then
         if self._stroke_buf.current then
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("gesture")
             self._page_dirty = true
         end
         self._stroke_x, self._stroke_y = nil, nil
@@ -996,7 +1312,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
     local gsy = start_y or y
     if gsx ~= self._ges_start_x or gsy ~= self._ges_start_y then
         if self._stroke_buf.current then
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("gesture")
             self._page_dirty = true
         end
         -- New finger-down: cancel the tighten timer but keep the rect so
@@ -1011,7 +1327,7 @@ function DrawingCanvas:onDrawStroke(_, ges)
         -- (x, y), i.e. today's behavior. See
         -- .agents/notes/finger-draw-input-latency.md, candidate 1.
         self._stroke_x, self._stroke_y = utils.stroke_seed_point(
-            start_x, start_y, x, y, CHROME_HEIGHT, self.dimen.w, self.dimen.h)
+            start_x, start_y, x, y, self:_chromeHeight(), self.dimen.w, self.dimen.h)
         self._stroke_min_x = nil; self._stroke_max_x = nil
         self._stroke_min_y = nil; self._stroke_max_y = nil
         self._ges_start_x  = gsx
@@ -1023,9 +1339,9 @@ function DrawingCanvas:onDrawStroke(_, ges)
 
     -- StrokeBuffer: start or extend current stroke
     if not self._stroke_buf.current then
-        self._stroke_buf:penDown(prev_x, prev_y, DEFAULT_LINE_WIDTH, self._current_color)
+        self._stroke_buf:penDown(prev_x, prev_y, DEFAULT_LINE_WIDTH, self._current_color, "gesture")
     end
-    self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH)
+    self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH, "gesture")
 
     self:_drawSegment(prev_x, prev_y, x, y, DEFAULT_LINE_WIDTH)
 
@@ -1048,8 +1364,13 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
     if ges and ges.pos then
         local x = math.floor(ges.pos.x)
         local y = math.floor(ges.pos.y)
+        if self._event_log then
+            self._event_log:write("GES", "pan_release",
+                string.format("pos=%d,%d", x, y),
+                string.format("last=%s,%s", tostring(self._stroke_x), tostring(self._stroke_y)))
+        end
         if self._stroke_x and self._stroke_y then
-            self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH)
+            self._stroke_buf:penMove(x, y, DEFAULT_LINE_WIDTH, "gesture")
             self:_drawSegment(self._stroke_x, self._stroke_y, x, y, DEFAULT_LINE_WIDTH)
         end
         self._stroke_max_x = math.max(self._stroke_max_x or x, x)
@@ -1058,7 +1379,7 @@ function DrawingCanvas:onDrawStrokeEnd(_, ges)
         self._stroke_min_y = math.min(self._stroke_min_y or y, y)
     end
 
-    self._stroke_buf:penUp()
+    self._stroke_buf:penUp("gesture")
     self._page_dirty = true
     self:_scheduleIdleSave()
 
@@ -1119,24 +1440,75 @@ function DrawingCanvas:_digToScreen(rx, ry)
     return math.floor(nx * (W-1)), math.floor(ny * (H-1))
 end
 
-function DrawingCanvas:_updateGestureZones()
-    -- After rotation dimen.w changes; MenuTap x must track the right edge,
-    -- and PageNumberTap's width must track the gap between the two side
-    -- zones. ExitTap is always at x=0 so it never needs updating.
-    if not (self.ges_events.MenuTap and self.ges_events.MenuTap[1]) then return end
-    local r = self.ges_events.MenuTap[1].range
-    r.x = self.dimen.w - CHROME_TOOLS_W
-    r.y = 0
-    r.w = CHROME_TOOLS_W
-    r.h = CHROME_HEIGHT
+--- Height of the top strip right now: zero while it is hidden.
+function DrawingCanvas:_chromeHeight()
+    return page_nav.strip_height(self._chrome_hidden, CHROME_HEIGHT)
+end
 
-    if self.ges_events.PageNumberTap and self.ges_events.PageNumberTap[1] then
-        local pr = self.ges_events.PageNumberTap[1].range
-        pr.x = CHROME_EXIT_W
-        pr.y = 0
-        pr.w = self.dimen.w - CHROME_EXIT_W - CHROME_TOOLS_W
-        pr.h = CHROME_HEIGHT
+--- True when a point must not take ink: inside the top strip, or inside a page
+-- margin while margin page turns are on. The margin rects are cached by
+-- _updateGestureZones, so this is allocation-free on the ~120 Hz pen path.
+function DrawingCanvas:_inNoInkZone(x, y)
+    if y < self:_chromeHeight() then return true end
+    return self._margin_rects ~= nil
+           and page_nav.in_margin(self._margin_rects, x, y) ~= nil
+end
+
+--- The five chrome zones for the current canvas width.
+function DrawingCanvas:_chromeLayout()
+    return page_nav.chrome_layout(self.dimen.w, CHROME_HEIGHT, {
+        exit_w = CHROME_EXIT_W,
+        menu_w = CHROME_TOOLS_W,
+    })
+end
+
+--- Point one chrome tap zone at a rect, creating the zone if it is missing and
+-- removing it when the rect is nil (a width too narrow for page arrows).
+-- Existing ranges are mutated in place, not replaced: KOReader holds the range
+-- objects (see notes/canvas-widget-gotchas.md, the self.dimen mutation rule).
+function DrawingCanvas:_setTapZone(event_name, rect)
+    local zone = self.ges_events[event_name]
+    if not rect then
+        self.ges_events[event_name] = nil
+        return
     end
+    if zone and zone[1] then
+        local range = zone[1].range
+        range.x, range.y, range.w, range.h = rect.x, rect.y, rect.w, rect.h
+        return
+    end
+    self.ges_events[event_name] = {
+        GestureRange:new{
+            ges   = "tap",
+            range = Geom:new{x = rect.x, y = rect.y, w = rect.w, h = rect.h},
+        },
+    }
+end
+
+--- Lay the chrome tap zones out for the current width. Called from init and
+-- again after a rotation changes dimen.w.
+function DrawingCanvas:_updateGestureZones()
+    local layout = self:_chromeLayout()
+    local shown  = not self._chrome_hidden
+    -- A hidden strip has no buttons; only the peek band listens, for the
+    -- double tap that shows the strip again.
+    self:_setTapZone("ExitTap",       shown and layout.exit   or nil)
+    self:_setTapZone("MenuTap",       shown and layout.menu   or nil)
+    self:_setTapZone("PageNumberTap", shown and layout.number or nil)
+    self:_setTapZone("PrevPageTap",   shown and layout.prev   or nil)
+    self:_setTapZone("NextPageTap",   shown and layout.next   or nil)
+    self:_setTapZone("TopPeekTap",
+        (not shown) and page_nav.top_peek_zone(self.dimen.w, CHROME_PEEK_H) or nil)
+
+    -- Page margins (opt-in): double tap turns the page.
+    local margins = nil
+    if self._margin_page_turn then
+        margins = page_nav.margin_zones(self.dimen.w, self.dimen.h,
+                                        self:_chromeHeight(), MARGIN_ZONE_W)
+    end
+    self._margin_rects = margins
+    self:_setTapZone("MarginLeftTap",  margins and margins.left  or nil)
+    self:_setTapZone("MarginRightTap", margins and margins.right or nil)
 end
 
 --- Rebuild self._bb from StrokeBuffer's true stroke colors, without
@@ -1288,7 +1660,7 @@ function DrawingCanvas:_runColorSelfTest()
     bar_colors[#bar_colors + 1] = Blitbuffer.COLOR_WHITE
 
     local test_rect = utils.selftest_layout(
-        self.dimen.w, self.dimen.h, CHROME_HEIGHT, #bar_colors,
+        self.dimen.w, self.dimen.h, self:_chromeHeight(), #bar_colors,
         COLOR_SELFTEST_BAR_HEIGHT, COLOR_SELFTEST_WIDTH_FRACTION,
         COLOR_SELFTEST_TOP_MARGIN)
 
@@ -1593,7 +1965,14 @@ end
 -- .agents/plans/vertex-line-bug-handoff.md.
 function DrawingCanvas:_dialogOpened()
     self._dialog_open = true
+    self:_resetStrokeTracking()
+end
 
+--- Close any stroke in progress and clear all per-gesture tracking state
+-- (pen, touch and finger-draw gesture fields). Shared by _dialogOpened and
+-- page navigation: both change what the next input point means, so a stale
+-- last-point must never connect to the next stroke's first point.
+function DrawingCanvas:_resetStrokeTracking()
     if self._stroke_buf and self._stroke_buf.current then
         self._stroke_buf:penUp()
         self._page_dirty = true
@@ -1699,7 +2078,7 @@ function DrawingCanvas:_pollPen()
             local sx, sy = self:_digToScreen(ev.x, ev.y)
 
             -- Chrome strip: abort any open stroke and ignore the event
-            if sy < CHROME_HEIGHT then
+            if self:_inNoInkZone(sx, sy) then
                 if self._last_pen_x then
                     self._stroke_buf:penUp()
                     self._last_pen_x = nil
@@ -1768,9 +2147,9 @@ function DrawingCanvas:_pollPen()
                 -- New pen contact: cancel the tighten timer but keep the rect
                 -- so all strokes in this session share one color refresh.
                 if self._tighten_fn then self:_cancelTightenTimer() end
-                self._stroke_buf:penDown(sx, sy, lw, self._current_color)
+                self._stroke_buf:penDown(sx, sy, lw, self._current_color, "pen")
             else
-                self._stroke_buf:penMove(sx, sy, lw)
+                self._stroke_buf:penMove(sx, sy, lw, "pen")
             end
 
             -- Only update the display buffer when there is an active stroke,
@@ -1788,7 +2167,7 @@ function DrawingCanvas:_pollPen()
             if not self._eraser_locked then
                 self._eraser_mode = false
             end
-            self._stroke_buf:penUp()
+            self._stroke_buf:penUp("pen")
             -- Flush any rect the live-refresh throttle hadn't fired for yet,
             -- so the last segments of a stroke are never left un-refreshed.
             -- Unconditional (not behind had_stroke or the flag check): it's a
@@ -1838,9 +2217,21 @@ function DrawingCanvas:_pollTouch()
 
     self._touchdev:poll(function(slot_ev)
         -- Filter through palm rejection
-        local filtered = self._palmreject
-            and self._palmreject:onTouchEvent(slot_ev)
-            or  slot_ev
+        -- Not `palmreject and palmreject:onTouchEvent(ev) or ev`: a nil result
+        -- (rejected) is falsy, so that form falls through to `ev` and never
+        -- rejects anything (lua.instructions.md, the and/or ternary pitfall).
+        local filtered = slot_ev
+        if self._palmreject then
+            filtered = self._palmreject:onTouchEvent(slot_ev)
+        end
+
+        if self._event_log then
+            self._event_log:write("TCH", slot_ev.type,
+                string.format("slot=%s id=%s", tostring(slot_ev.slot), tostring(slot_ev.id)),
+                string.format("x=%s y=%s major=%s %s", tostring(slot_ev.x),
+                    tostring(slot_ev.y), tostring(slot_ev.touch_major),
+                    filtered and "accepted" or "rejected"))
+        end
 
         if filtered and self.finger_draw then
             -- A canvas-owned dialog is on top: this touch is on the
@@ -1866,11 +2257,11 @@ function DrawingCanvas:_pollTouch()
                 self._last_touch_x = nil
                 self._last_touch_y = nil
                 if self._tighten_fn then self:_cancelTightenTimer() end
-                self._stroke_buf:penDown(fx, fy, DEFAULT_LINE_WIDTH, self._current_color)
+                self._stroke_buf:penDown(fx, fy, DEFAULT_LINE_WIDTH, self._current_color, "touch")
                 self._last_touch_x = fx
                 self._last_touch_y = fy
             elseif filtered.type == "move" then
-                self._stroke_buf:penMove(fx, fy, DEFAULT_LINE_WIDTH)
+                self._stroke_buf:penMove(fx, fy, DEFAULT_LINE_WIDTH, "touch")
                 if self._last_touch_x then
                     self:_drawSegment(self._last_touch_x, self._last_touch_y,
                                       fx, fy, DEFAULT_LINE_WIDTH)
@@ -1878,7 +2269,7 @@ function DrawingCanvas:_pollTouch()
                 self._last_touch_x = fx
                 self._last_touch_y = fy
             elseif filtered.type == "up" then
-                self._stroke_buf:penUp()
+                self._stroke_buf:penUp("touch")
                 -- Unconditional flush, same reasoning as the pen-up handler:
                 -- no-op unless a live_color_refresh rect is pending.
                 self:_flushLiveRefresh()
@@ -1903,9 +2294,11 @@ end
 
 --- Load an SVG page into this canvas, replacing the current StrokeBuffer.
 -- Safe to call during init (before the widget is on the UIManager stack).
--- @string path  Absolute path to the SVG file.
+-- @string path          Absolute path to the SVG file.
+-- @string refresh_mode  Optional e-ink refresh for the repaint (default "full";
+--                       page turns pass PAGE_TURN_REFRESH to avoid a flash).
 -- @return boolean  true on success
-function DrawingCanvas:loadPage(path)
+function DrawingCanvas:loadPage(path, refresh_mode)
     -- Always claim this path for saves, even if the file doesn't exist yet
     -- (new notebook pages are created on first save, not on open).
     self._page_path  = path
@@ -1938,7 +2331,7 @@ function DrawingCanvas:loadPage(path)
     if self._bb then
         self:_rebuildDisplayFromStrokes()
         self:_cancelTighten()
-        UIManager:setDirty(self, "full")
+        UIManager:setDirty(self, refresh_mode or "full")
     end
 
     logger.dbg("FastNote canvas: loadPage", path,
@@ -1953,6 +2346,7 @@ function DrawingCanvas:_doClose()
     end
     self:_cancelTighten()
     self:_autoSave()
+    self:_cancelPickerTimer()
     -- Close the canvas, then schedule a full e-ink refresh on the next tick
     -- so the underlying UI gets a complete paint cycle without ghosting.
     UIManager:close(self)
@@ -2049,20 +2443,54 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Save the current page silently if dirty (no InfoMessage).
+-- A dirty page is written even when it is now empty: an erased or cleared
+-- page must overwrite its old SVG, or the old strokes come back on reload. A
+-- page that was never touched is not dirty and never gets a file.
+-- @return boolean  false only when a save was needed and failed.
 function DrawingCanvas:_autoSave()
-    if not (self._page_path and self._page_dirty
-            and not self._stroke_buf:isEmpty()) then
-        return
-    end
+    if not (self._page_path and self._page_dirty) then return true end
     local ok_svg, svg_module = pcall(require, "lib/svg")
-    if not ok_svg then return end
+    if not ok_svg then return false end
+    local ok_text, text = pcall(svg_module.write, self._stroke_buf,
+                                self.dimen.w, self.dimen.h)
+    if not ok_text then
+        logger.warn("FastNote canvas: auto-save: svg.write failed:", text)
+        return false
+    end
     local f = io.open(self._page_path, "w")
-    if not f then return end
-    f:write(svg_module.write(self._stroke_buf, self.dimen.w, self.dimen.h))
+    if not f then
+        logger.warn("FastNote canvas: auto-save: cannot open", self._page_path)
+        return false
+    end
+    local wrote = f:write(text)
     f:close()
+    if not wrote then
+        logger.warn("FastNote canvas: auto-save: write failed", self._page_path)
+        return false
+    end
     self._page_dirty = false
     if self.on_save_callback then self.on_save_callback(self._page_path) end
     logger.dbg("FastNote canvas: auto-saved to", self._page_path)
+    return true
+end
+
+--- Get the current page safely onto disk before the page changes.
+-- Closes any stroke in progress first so it is part of what gets saved, and
+-- cancels the colour-settle timer so it cannot fire on the next page. When
+-- the save fails the turn is abandoned with a message: continuing would
+-- replace the stroke buffer and lose the page.
+-- @return boolean  true when it is safe to change pages.
+function DrawingCanvas:_saveBeforeTurn()
+    self:_resetStrokeTracking()
+    self:_cancelTighten()
+    if self:_autoSave() then return true end
+    self:_dialogOpened()
+    UIManager:show(InfoMessage:new{
+        text = "Could not save this page, so it was not changed. " ..
+               "Check the free space and try again.",
+        dismiss_callback = function() self:_dialogClosed() end,
+    })
+    return false
 end
 
 --- Schedule a silent save 30 s after the last stroke change.
@@ -2096,26 +2524,25 @@ function DrawingCanvas:_navigatePage(delta)
     local cb = delta > 0 and self.on_page_forward or self.on_page_back
     if not cb then return end
 
-    if delta > 0 then
-        local current_page_is_blank = #self._stroke_buf.strokes == 0
-        if utils.should_block_forward_nav(self._prev_page_was_blank, current_page_is_blank) then
-            self:_dialogOpened()
-            UIManager:show(InfoMessage:new{
-                text = "Two blank pages in a row -- draw something here, " ..
-                       "or use the notebook browser to add more pages.",
-                dismiss_callback = function() self:_dialogClosed() end,
-            })
-            return
-        end
-        self._prev_page_was_blank = current_page_is_blank
-    else
-        self._prev_page_was_blank = false
+    local leaving_blank = #self._stroke_buf.strokes == 0
+    if delta > 0 and self:_forwardNavBlocked() then
+        self:_dialogOpened()
+        UIManager:show(InfoMessage:new{
+            text = "Two blank pages in a row -- draw something here, " ..
+                   "or use the notebook browser to add more pages.",
+            dismiss_callback = function() self:_dialogClosed() end,
+        })
+        return
     end
 
-    self:_autoSave()
+    if not self:_saveBeforeTurn() then return end
 
     local new_idx, new_count, new_path = cb()
     if not new_path then return end   -- at boundary (page 1 going back, etc.)
+
+    -- Only after the turn succeeded, so a refused or failed turn leaves the
+    -- blank-page streak exactly as it was.
+    self._prev_page_was_blank = (delta > 0) and leaving_blank or false
 
     self:_applyPageNavigation(new_idx, new_count, new_path)
 end
@@ -2130,13 +2557,91 @@ function DrawingCanvas:_navigateToPage(idx)
     if not self.on_page_jump then return end
     if idx == self.page_index then return end
 
+    if not self:_saveBeforeTurn() then return end
     self._prev_page_was_blank = false
-    self:_autoSave()
 
     local new_idx, new_count, new_path = self.on_page_jump(idx)
     if not new_path then return end
 
     self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Insert a blank page after the current one and open it (hamburger menu).
+function DrawingCanvas:_insertPageAfterCurrent()
+    if not self.on_page_insert then return end
+    if not self:_saveBeforeTurn() then return end
+
+    local new_idx, new_count, new_path = self.on_page_insert(self.page_index)
+    if not new_path then return end
+
+    self._prev_page_was_blank = false
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+end
+
+--- Ask before deleting the current page. The only page cannot be deleted.
+function DrawingCanvas:_confirmRemovePage()
+    if self.page_count <= 1 then
+        self:_dialogOpened()
+        UIManager:show(InfoMessage:new{
+            text = "A notebook needs at least one page. " ..
+                   "Use Clear page to empty this one instead.",
+            dismiss_callback = function() self:_dialogClosed() end,
+        })
+        return
+    end
+
+    local confirm
+    confirm = ButtonDialogTitle:new{
+        title = string.format("Delete page %d of %d?", self.page_index, self.page_count),
+        buttons = {
+            {
+                {text = "Cancel",
+                 callback = function() UIManager:close(confirm) end},
+                {text = "Delete",
+                 callback = function()
+                     UIManager:close(confirm)
+                     self:_removeCurrentPage()
+                 end},
+            },
+        },
+        -- See the onCloseWidget wrapper on the hamburger menu (onMenuTap)
+        -- for why this can't just be close_callback.
+        onCloseWidget = function(dialog_self)
+            self:_dialogClosed()
+            ButtonDialogTitle.onCloseWidget(dialog_self)
+        end,
+    }
+    self:_dialogOpened()
+    UIManager:show(confirm)
+end
+
+--- Delete the current page and open the page that takes its place. The latest
+-- strokes are saved first, so the copy the notebook keeps in its removed
+-- folder is current.
+function DrawingCanvas:_removeCurrentPage()
+    if not self.on_page_remove then return end
+    if not self:_saveBeforeTurn() then return end
+
+    local new_idx, new_count, new_path, kept_path = self.on_page_remove(self.page_index)
+    if not new_path then
+        self:_dialogOpened()
+        UIManager:show(InfoMessage:new{
+            text = "Could not delete this page.",
+            dismiss_callback = function() self:_dialogClosed() end,
+        })
+        return
+    end
+
+    self._prev_page_was_blank = false
+    self:_applyPageNavigation(new_idx, new_count, new_path)
+
+    if kept_path then
+        self:_dialogOpened()
+        UIManager:show(InfoMessage:new{
+            text = "Page deleted. A copy is kept in this notebook's removed folder.",
+            dismiss_callback = function() self:_dialogClosed() end,
+        })
+    end
 end
 
 --- Shared tail of page navigation: swap _stroke_buf/display for a newly
@@ -2146,13 +2651,19 @@ function DrawingCanvas:_applyPageNavigation(new_idx, new_count, new_path)
     self.page_index = new_idx
     self.page_count = new_count
 
+    -- Per-stroke tracking and the colour-settle timer belong to the old page;
+    -- left alone, the first point on the new page would connect to the old
+    -- page's last point and the old page's tighten pass would fire here.
+    self:_resetStrokeTracking()
+    self:_cancelTighten()
+
     -- Reset stroke buffer and display before loading so a blank new page is clean.
     self._stroke_buf = StrokeBuffer.new()
     if self._bb then self._bb:fill(self:_bgColor()) end
 
-    self:loadPage(new_path)           -- populates _stroke_buf if SVG exists
+    self:loadPage(new_path, PAGE_TURN_REFRESH)  -- populates _stroke_buf if SVG exists
 
-    UIManager:setDirty(self, "full")
+    UIManager:setDirty(self, PAGE_TURN_REFRESH)
     logger.dbg("FastNote canvas: navigated to page", new_idx, "/", new_count)
 end
 

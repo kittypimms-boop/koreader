@@ -133,6 +133,47 @@ describe("PalmReject", function()
 
     -- ── Area threshold gate ──────────────────────────────────────────────────
 
+    -- "leave" is emitted by pen_statemachine:release_pen() when the pen leaves
+    -- range. A pen that only hovered never emits "up", so without "leave" the
+    -- last "hover" would hold the gate shut indefinitely.
+    describe("pen leave", function()
+        it("keeps the gate shut right after leave (blackout, not instant release)", function()
+            local clock = make_clock(0)
+            local pr    = PalmReject.new({blackout_ms = 200}, clock.fn)
+            pr:onPenEvent({type = "hover"})
+            pr:onPenEvent({type = "leave"})
+            assert.is_true(pr:isPenProximate())
+        end)
+
+        it("touch is accepted once the blackout after leave has elapsed", function()
+            local clock = make_clock(0)
+            local pr    = PalmReject.new({blackout_ms = 200}, clock.fn)
+            pr:onPenEvent({type = "hover"})
+            pr:onPenEvent({type = "leave"})
+            clock.advance(250)
+            assert.is_false(pr:isPenProximate())
+            local passed = pr:onTouchEvent(touch_down(0, 1, 5, 5))
+            assert.is_not_nil(passed)
+        end)
+
+        it("touch is rejected inside the blackout after leave", function()
+            local clock = make_clock(0)
+            local pr    = PalmReject.new({blackout_ms = 200}, clock.fn)
+            pr:onPenEvent({type = "hover"})
+            pr:onPenEvent({type = "leave"})
+            clock.advance(100)
+            assert.is_nil(pr:onTouchEvent(touch_down(0, 1, 5, 5)))
+        end)
+
+        it("leave with no earlier pen event does not make the pen proximate", function()
+            local clock = make_clock(0)
+            local pr    = PalmReject.new({blackout_ms = 200}, clock.fn)
+            pr:onPenEvent({type = "leave"})
+            clock.advance(250)
+            assert.is_false(pr:isPenProximate())
+        end)
+    end)
+
     describe("area gate", function()
         it("large contact is rejected when area_threshold is set", function()
             local pr = PalmReject.new({area_threshold = 100})

@@ -77,6 +77,28 @@ describe("lib/eventlog", function()
         os.remove(path)
     end)
 
+    it("uses the injected clock for the timestamp when one is given", function()
+        local path = os.tmpname()
+        local log = EventLog.new(path, {clock_fn = function() return 4242 end})
+        log:write("GES", "pan", "pos=1,2", "stroke=1,2")
+        log:close()
+
+        local content = read_file(path)
+        assert.is_truthy(content:match("^4242  GES  pan"))
+        os.remove(path)
+    end)
+
+    it("floors a fractional injected clock to a whole number", function()
+        local path = os.tmpname()
+        local log = EventLog.new(path, {clock_fn = function() return 1000.9 end})
+        log:write("RAW", "EV_SYN", "SYN_REPORT", 0)
+        log:close()
+
+        local content = read_file(path)
+        assert.is_truthy(content:match("^1000  RAW"))
+        os.remove(path)
+    end)
+
     it("each line ends with a newline", function()
         local path = os.tmpname()
         local log = EventLog.new(path)

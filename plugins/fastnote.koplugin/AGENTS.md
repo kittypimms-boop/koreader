@@ -187,6 +187,7 @@ skip the rest.
 | E-ink refresh / waveforms | Kaleido color waveform modes, A2-live + deferred GLRC16 tighten-pass design | `notes/waveform-refresh-research.md` |
 | Input path architecture | Gesture vs. raw-evdev, per-flag scope, hardware eraser detection | `notes/input-path-architecture.md` |
 | Finger-draw latency (open) | Why finger strokes lose their opening millimetres, and the candidate fixes | `notes/finger-draw-input-latency.md` |
+| Finger-lift jump (open) | Hypotheses for a stroke ending at the wrong point when a finger lifts, the debug-log capture steps, and which log line proves which cause | `notes/finger-lift-jump-diagnosis.md` |
 | Canvas widget lifecycle | `self.dimen` mutation rule, orientation re-lock, gesture zone timing | `notes/canvas-widget-gotchas.md` |
 | Known tech debt | Deferred cleanup items and their resolutions | `notes/tech-debt.md` |
 | Storage format | SVG + embedded JSON metadata | `ADRs/ADR-001-svg-with-embedded-json-metadata.md` |

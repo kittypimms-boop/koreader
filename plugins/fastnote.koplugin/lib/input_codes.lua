@@ -33,7 +33,13 @@ M.ABS_MT_PRESSURE    = 0x3a   -- 58  pressure for current slot
 -- ABS_MT_TOOL_TYPE values
 M.MT_TOOL_FINGER = 0
 M.MT_TOOL_PEN    = 1
+-- Value 2 has two meanings. The Linux uapi calls it MT_TOOL_PALM; KOReader's
+-- Elan convention (frontend/device/input.lua) calls it an eraser. Both names
+-- are kept so callers say which meaning they rely on. The Libra Colour's chip
+-- is not known to send 2 at all (the eraser tip reports MT_TOOL_PEN plus
+-- BTN_STYLUS), so pendev.lua's handling of 2 is defensive, not observed.
 M.MT_TOOL_ERASER = 2
+M.MT_TOOL_PALM   = 2
 
 -- Reverse lookup: numeric event code → name string (for human-readable logging).
 -- Explicit table avoids conflicts between code constants and value constants

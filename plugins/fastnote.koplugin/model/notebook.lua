@@ -14,9 +14,17 @@ The one shell-out here (`mkdir -p`) quotes its path via lib/shell_quote.
 --]]--
 
 local shell_quote = require("lib/shell_quote")
+local page_nav    = require("lib/page_nav")
 
 local Notebook = {}
 Notebook.__index = Notebook
+
+local function _file_exists(path)
+    local f = io.open(path, "r")
+    if not f then return false end
+    f:close()
+    return true
+end
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -174,18 +182,111 @@ function Notebook:setLastPage(idx)
     return self.last_page
 end
 
+--- Pick a page file name that no page uses and no file on disk occupies.
+-- A page's position in the list is separate from its file name, so after a
+-- delete or an insert the count no longer identifies a free name. Numbering
+-- continues from the highest number in use, and skips any name whose file
+-- still exists (a removed page's SVG must never come back as a new blank page).
+local function _free_page_file(nb)
+    local in_use  = {}
+    local highest = #nb._pages
+    for __, fname in ipairs(nb._pages) do
+        in_use[fname] = true
+        local number = tonumber(fname:match("^page_(%d+)%.svg$"))
+        if number and number > highest then highest = number end
+    end
+    local number = highest + 1
+    while true do
+        local fname = string.format("page_%03d.svg", number)
+        if not in_use[fname] and not _file_exists(nb.dir .. "/" .. fname) then
+            return fname
+        end
+        number = number + 1
+    end
+end
+
+--- Insert a new blank page after page after_idx and return its index and path.
+-- after_idx 0 inserts at the front; an index past the end appends.
+-- last_page follows the page it pointed at, so an insert before it shifts it.
+-- @number after_idx  Page to insert after (0..pageCount()).
+-- @return number, string  (new_index, absolute_path)
+function Notebook:insertPage(after_idx)
+    local count    = #self._pages
+    local position = 0
+    if type(after_idx) == "number" then
+        position = math.max(0, math.min(math.floor(after_idx), count))
+    end
+    local fname   = _free_page_file(self)
+    local new_idx = position + 1
+    table.insert(self._pages, new_idx, fname)
+    if self.last_page and self.last_page >= new_idx then
+        self.last_page = self.last_page + 1
+    end
+    _write_meta(self)
+    return new_idx, self.dir .. "/" .. fname
+end
+
 --- Append a new blank page and return its index and path.
 -- @return number, string  (new_index, absolute_path)
 function Notebook:addPage()
-    local n     = #self._pages + 1
-    local fname = string.format("page_%03d.svg", n)
-    self._pages[n] = fname
-    _write_meta(self)
-    return n, self.dir .. "/" .. fname
+    return self:insertPage(#self._pages)
 end
 
---- Remove the page at index idx (1-indexed).
--- Does not delete the SVG file — caller is responsible if needed.
+--- Move a page's SVG into <notebook>/removed/ so a removal can be undone by hand.
+-- A name already taken there gets a numeric suffix, so an earlier removal is
+-- never overwritten.
+-- @return string|nil  New path, or nil when the file could not be moved.
+local function _move_to_removed(nb, fname)
+    local removed_dir = nb.dir .. "/removed"
+    os.execute("mkdir -p " .. shell_quote.quote(removed_dir))
+    local stem   = fname:gsub("%.svg$", "")
+    local target = removed_dir .. "/" .. fname
+    local suffix = 0
+    while _file_exists(target) do
+        suffix = suffix + 1
+        target = string.format("%s/%s_%d.svg", removed_dir, stem, suffix)
+    end
+    if not os.rename(nb.dir .. "/" .. fname, target) then return nil end
+    return target
+end
+
+--- Remove page idx from the notebook, keeping its drawing recoverable.
+-- The SVG moves to <notebook>/removed/ instead of being deleted. The only page
+-- cannot be removed (a notebook with no pages cannot be opened). If the file
+-- cannot be moved nothing changes, so a failed removal never loses a drawing.
+-- last_page follows the page it pointed at.
+-- @number idx  Page to remove (1-based).
+-- @return number|nil, string|nil
+--   (page to show next, path the SVG was kept at or nil if it was never saved)
+--   or (nil, "out_of_range"|"only_page"|"move_failed").
+function Notebook:removePage(idx)
+    local count = #self._pages
+    if type(idx) ~= "number" or idx ~= math.floor(idx)
+            or idx < 1 or idx > count then
+        return nil, "out_of_range"
+    end
+    local next_idx = page_nav.page_after_remove(idx, count)
+    if not next_idx then return nil, "only_page" end
+
+    local fname   = self._pages[idx]
+    local kept_at = nil
+    if _file_exists(self.dir .. "/" .. fname) then
+        kept_at = _move_to_removed(self, fname)
+        if not kept_at then return nil, "move_failed" end
+    end
+
+    table.remove(self._pages, idx)
+    if self.last_page then
+        if self.last_page > idx then self.last_page = self.last_page - 1 end
+        self.last_page = math.max(1, math.min(self.last_page, #self._pages))
+    end
+    _write_meta(self)
+    return next_idx, kept_at
+end
+
+--- Remove the page at index idx (1-indexed) from the list only.
+-- Low-level: does not touch the SVG file and permits an empty notebook. UI
+-- code uses removePage(), which keeps the drawing and refuses the last page.
 function Notebook:deletePage(idx)
     if idx >= 1 and idx <= #self._pages then
         table.remove(self._pages, idx)

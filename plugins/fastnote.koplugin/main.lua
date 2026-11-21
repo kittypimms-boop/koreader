@@ -86,6 +86,8 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
         dark_mode      = state.dark_mode == 1,
         current_color  = state.current_color,
         pressure_floor = state.pressure_floor,
+        chrome_hidden    = state.chrome_hidden == 1,
+        margin_page_turn = state.margin_page_turn == 1,
 
         finger_draw         = cfg.finger_draw,
         init_rotation_mode  = cfg.rotation_mode,
@@ -103,6 +105,16 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
 
         on_dark_mode_change = function(dm)
             state.dark_mode = dm and 1 or 0
+            lib:writeState(state)
+        end,
+
+        on_chrome_hidden_change = function(hidden)
+            state.chrome_hidden = hidden and 1 or 0
+            lib:writeState(state)
+        end,
+
+        on_margin_turn_change = function(enabled)
+            state.margin_page_turn = enabled and 1 or 0
             lib:writeState(state)
         end,
 
@@ -148,6 +160,27 @@ function FastNote:_openCanvas(lib, state, nb, page_idx)
             local path = nb:pagePath(page_idx)
             _rememberPosition(lib, state, nb, page_idx)
             return page_idx, nb:pageCount(), path
+        end,
+
+        -- Insert a blank page after the given page and open it (hamburger
+        -- menu "Insert page after").
+        on_page_insert = function(after_idx)
+            local new_idx, path = nb:insertPage(after_idx)
+            page_idx = new_idx
+            _rememberPosition(lib, state, nb, page_idx)
+            return page_idx, nb:pageCount(), path
+        end,
+
+        -- Remove a page (hamburger menu "Delete page"); the notebook keeps its
+        -- SVG under removed/. Returns nil when the removal is refused (only
+        -- page, out of range, or the file could not be moved).
+        on_page_remove = function(idx)
+            local next_idx, kept_path = nb:removePage(idx)
+            if not next_idx then return nil end
+            page_idx = next_idx
+            local path = nb:pagePath(page_idx)
+            _rememberPosition(lib, state, nb, page_idx)
+            return page_idx, nb:pageCount(), path, kept_path
         end,
     })
 end
