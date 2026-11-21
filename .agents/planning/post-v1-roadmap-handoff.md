@@ -772,6 +772,10 @@ the KOReader runtime; verify it in the emulator.
 input layer allows — hardware palm rejection first, maybe hardware finger
 draw and pen reading, explicitly "for the heck of it."
 
+**Plan:** the kernel-module direction (an `input_handler` filter module, a
+QEMU and KUnit test rig, then a home-grown digitizer driver) is planned in
+`.agents/planning/kernel-palm-rejection/`. Planning only; no kernel code exists.
+
 Treat this as a **research spike behind a flag**. It must not become a
 dependency of W2/W3/W4.
 
