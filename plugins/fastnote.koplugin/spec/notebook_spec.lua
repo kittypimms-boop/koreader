@@ -122,6 +122,211 @@ describe("Notebook", function()
         end)
     end)
 
+    -- Writes a placeholder SVG so a page has a file on disk.
+    local function touch_page(nb, idx, text)
+        local f = assert(io.open(nb:pagePath(idx), "w"))
+        f:write(text or "<svg/>")
+        f:close()
+    end
+
+    local function file_exists(path)
+        local f = io.open(path, "r")
+        if not f then return false end
+        f:close()
+        return true
+    end
+
+    describe("page file naming", function()
+        it("addPage never reuses the file name of a page that still exists", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()                      -- page_002
+            nb:addPage()                      -- page_003
+            nb:deletePage(2)                  -- list: page_001, page_003
+            nb:addPage()
+            local seen = {}
+            for i = 1, nb:pageCount() do
+                local path = nb:pagePath(i)
+                assert.is_nil(seen[path], "duplicate page file " .. path)
+                seen[path] = true
+            end
+        end)
+
+        it("addPage never reuses the name of an orphaned SVG still on disk", function()
+            local nb = Notebook.create("X", base_dir)
+            local __, orphan_path = nb:addPage()      -- page_002
+            local f = assert(io.open(orphan_path, "w"))
+            f:write("<svg>old strokes</svg>")
+            f:close()
+            nb:deletePage(2)                          -- list entry gone, file stays
+            local __, new_path = nb:addPage()
+            assert.are_not.equal(orphan_path, new_path)
+        end)
+    end)
+
+    describe("Notebook:insertPage", function()
+        it("inserts a blank page after the given page and returns its index", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:addPage()                              -- 3 pages
+            local original_second = nb:pagePath(2)
+            local idx, path = nb:insertPage(1)
+            assert.equal(2, idx)
+            assert.equal(4, nb:pageCount())
+            assert.equal(path, nb:pagePath(2))
+            assert.equal(original_second, nb:pagePath(3))
+        end)
+
+        it("insertPage(0) puts the new page first", function()
+            local nb = Notebook.create("X", base_dir)
+            local original_first = nb:pagePath(1)
+            local idx = nb:insertPage(0)
+            assert.equal(1, idx)
+            assert.equal(original_first, nb:pagePath(2))
+        end)
+
+        it("an index past the end appends", function()
+            local nb = Notebook.create("X", base_dir)
+            local idx = nb:insertPage(99)
+            assert.equal(2, idx)
+            assert.equal(2, nb:pageCount())
+        end)
+
+        it("the new page gets a file name no other page uses", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:insertPage(1)
+            local seen = {}
+            for i = 1, nb:pageCount() do
+                local path = nb:pagePath(i)
+                assert.is_nil(seen[path])
+                seen[path] = true
+            end
+        end)
+
+        it("persists the new order across load", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            local idx, path = nb:insertPage(1)
+            local nb2 = Notebook.load(nb.uuid, base_dir)
+            assert.equal(path, nb2:pagePath(idx))
+            assert.equal(3, nb2:pageCount())
+        end)
+
+        it("moves last_page forward when a page is inserted before it", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:addPage()
+            nb:setLastPage(3)
+            nb:insertPage(1)
+            assert.equal(4, nb.last_page)
+        end)
+
+        it("leaves last_page alone when the page is inserted after it", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:setLastPage(1)
+            nb:insertPage(1)
+            assert.equal(1, nb.last_page)
+        end)
+    end)
+
+    describe("Notebook:removePage", function()
+        it("removes the page and returns the page to show next", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:addPage()                              -- 3 pages
+            local next_idx = nb:removePage(2)
+            assert.equal(2, next_idx)
+            assert.equal(2, nb:pageCount())
+        end)
+
+        it("removing the last page lands on the new last page", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            local next_idx = nb:removePage(2)
+            assert.equal(1, next_idx)
+        end)
+
+        it("refuses to remove the only page", function()
+            local nb = Notebook.create("X", base_dir)
+            local next_idx, reason = nb:removePage(1)
+            assert.is_nil(next_idx)
+            assert.equal("only_page", reason)
+            assert.equal(1, nb:pageCount())
+        end)
+
+        it("refuses an out-of-range index", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            local next_idx, reason = nb:removePage(9)
+            assert.is_nil(next_idx)
+            assert.equal("out_of_range", reason)
+            assert.equal(2, nb:pageCount())
+        end)
+
+        it("keeps the page's SVG recoverable instead of deleting it", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            touch_page(nb, 2, "<svg>precious</svg>")
+            local doomed = nb:pagePath(2)
+            local __, kept_at = nb:removePage(2)
+            assert.is_false(file_exists(doomed))
+            assert.truthy(kept_at)
+            local f = assert(io.open(kept_at, "r"))
+            local text = f:read("*a")
+            f:close()
+            assert.equal("<svg>precious</svg>", text)
+        end)
+
+        it("a page that was never saved has no file to keep", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            local next_idx, kept_at = nb:removePage(2)
+            assert.equal(1, next_idx)
+            assert.is_nil(kept_at)
+        end)
+
+        it("does not overwrite an earlier removed page with the same file name", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            touch_page(nb, 2, "<svg>first</svg>")
+            local __, first_kept = nb:removePage(2)
+            nb:addPage()
+            touch_page(nb, 2, "<svg>second</svg>")
+            local __, second_kept = nb:removePage(2)
+            assert.are_not.equal(first_kept, second_kept)
+            local f = assert(io.open(first_kept, "r"))
+            local text = f:read("*a")
+            f:close()
+            assert.equal("<svg>first</svg>", text)
+        end)
+
+        it("moves last_page back when an earlier page is removed", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:addPage()
+            nb:setLastPage(3)
+            nb:removePage(1)
+            assert.equal(2, nb.last_page)
+        end)
+
+        it("clamps last_page when the page it pointed at is removed", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:setLastPage(2)
+            nb:removePage(2)
+            assert.equal(1, nb.last_page)
+        end)
+
+        it("persists across load", function()
+            local nb = Notebook.create("X", base_dir)
+            nb:addPage()
+            nb:removePage(1)
+            local nb2 = Notebook.load(nb.uuid, base_dir)
+            assert.equal(1, nb2:pageCount())
+        end)
+    end)
+
     describe("Notebook:rename", function()
         it("changes the name and persists", function()
             local nb = Notebook.create("Old", base_dir)
